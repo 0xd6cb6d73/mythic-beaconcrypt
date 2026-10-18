@@ -57,20 +57,28 @@ GitHub Actions checks formatting, vet, race tests, `govulncheck`, and `golangci-
 
 ### Container images
 
-Every branch and tag push builds Linux amd64 and arm64 images. Branch builds export an OCI archive on the runner without publishing it. A tag push publishes to `ghcr.io/0xd6cb6d73/mythic-beaconcrypt:<git-tag>` after the Go checks pass. The image tag and OCI version label preserve the Git tag exactly, including a leading `v`; no `latest` or shortened version aliases are added. Git tags must fit the container tag format (1–128 letters, digits, underscores, dots or hyphens, starting with a letter, digit or underscore).
+Every branch and tag push builds Linux amd64 and arm64 images. After checks pass, each push to `main` automatically publishes a release named `v0.1.<workflow-run-number>`. The run number makes versions unique across overlapping pushes and stable across retries; numbers can have gaps because other branches and pull requests use the same workflow. A push containing several commits releases its tested tip. Other branch builds export an OCI archive on the runner without publishing it.
 
-The workflow authenticates to GHCR with `GITHUB_TOKEN` and signs the published multi-platform manifest digest using Cosign and GitHub OIDC. It verifies the signature before the job succeeds. No signing-key secret is required. Registry and OIDC write permissions are scoped to the image job; publication and signing run only for tag pushes with passing checks.
+CI prepares a GitHub-signed commit that changes only `config.json`, preserving its other settings and setting `remote_images.mythic_beaconcrypt` to `ghcr.io/0xd6cb6d73/mythic-beaconcrypt:<version>`. It builds that exact commit, publishes the image, signs and verifies its multi-platform manifest digest with Cosign and GitHub OIDC, then creates the matching Git tag and promotes the configuration to `main`. Installation therefore uses an image that has already been published and verified. Before the first successful release, installation builds from source.
+
+Release jobs queue instead of cancelling one another. If `main` advances during a build, its new code is preserved and only the published image reference is updated; an older release cannot replace a newer release's image reference. Rerunning a completed release verifies the existing image instead of rebuilding or moving its tag. Temporary release branches are removed after promotion; a failed attempt retains its candidate for the retry.
+
+The workflow uses `GITHUB_TOKEN` for registry access and its GitHub-signed configuration commits. Those generated commits and tags do not trigger another push workflow, so publishing and signing run in the original `main` workflow. No signing-key secret is required. Repository, registry, and OIDC write permissions are scoped to the image job. Changes to the application remain ordinary developer commits; CI adds the release configuration commit with its Codex footer.
+
+Manual tag pushes also build and publish after checks pass, but their committed `config.json` must already name that exact versioned image. Image tags and OCI version labels preserve Git tags exactly, including a leading `v`; no `latest` or shortened aliases are added. Git tags must fit the container tag format (1–128 letters, digits, underscores, dots or hyphens, starting with a letter, digit or underscore).
 
 For a published tag, verify and pull the image with:
 
 ```sh
-version=v0.3.0 # Replace with the published Git tag.
+version=v0.1.42 # Replace with the published Git tag.
 image="ghcr.io/0xd6cb6d73/mythic-beaconcrypt:$version"
 cosign verify "$image" \
-  --certificate-identity "https://github.com/0xd6cb6d73/mythic-beaconcrypt/.github/workflows/ci.yml@refs/tags/$version" \
+  --certificate-identity 'https://github.com/0xd6cb6d73/mythic-beaconcrypt/.github/workflows/ci.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 docker pull "$image"
 ```
+
+Automatic releases use the `main` workflow's certificate identity shown above. For a manual tag release, use the identity ending in `@refs/tags/$version` instead.
 
 GHCR package visibility is configured separately from repository visibility. Log in to GHCR for private packages, or make the package public to allow anonymous pulls.
 

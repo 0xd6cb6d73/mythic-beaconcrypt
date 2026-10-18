@@ -1,4 +1,4 @@
-name: Go checks
+name: Checks and container releases
 
 on:
   push:
@@ -46,6 +46,9 @@ jobs:
       - name: Check copied crypto-provider template
         working-directory: .
         run: python3 scripts/check-template.py
+      - name: Check release automation
+        working-directory: .
+        run: python3 -m unittest discover -s scripts -p 'test_release.py' -v
       - uses: actions/setup-go@v6
         with:
           go-version: stable
@@ -110,14 +113,18 @@ jobs:
         run: make test-integration
 
   image:
-    name: Build container image
+    name: Build and release container image
     needs: check
     # Build failed-check pushes too; release publication still requires success.
     if: ${{ !cancelled() && github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    concurrency:
+      group: ${{ (github.ref == 'refs/heads/main' || github.ref_type == 'tag') && 'container-release' || format('container-build-{0}', github.run_id) }}
+      queue: max
+      cancel-in-progress: false
     permissions:
-      contents: read
+      contents: write
       packages: write
       id-token: write
     steps:
@@ -128,11 +135,13 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           CHECK_RESULT: ${{ needs.check.result }}
+          ACTOR: ${{ github.actor }}
         shell: bash
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           version="sha-${GITHUB_SHA}"
           publish=false
+          automatic=false
           if [[ "$REF_TYPE" == tag ]]; then
             if [[ ! "$REF_NAME" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
               printf '%s\n' '::error::Git tag must be a valid container tag (1-128 letters, digits, underscores, dots or hyphens; start with a letter, digit or underscore).'
@@ -142,8 +151,40 @@ jobs:
             if [[ "$CHECK_RESULT" == success ]]; then
               publish=true
             fi
+          elif [[ "$REF_NAME" == main && "$CHECK_RESULT" == success && "$ACTOR" != 'github-actions[bot]' ]]; then
+            version="v0.1.${GITHUB_RUN_NUMBER}"
+            publish=true
+            automatic=true
           fi
-          printf 'name=%s\nversion=%s\npublish=%s\n' "$image" "$version" "$publish" >> "$GITHUB_OUTPUT"
+          printf 'name=%s\nversion=%s\npublish=%s\nautomatic=%s\n' "$image" "$version" "$publish" "$automatic" >> "$GITHUB_OUTPUT"
+      - name: Prepare signed release configuration
+        id: release
+        if: steps.image.outputs.automatic == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.image.outputs.version }}
+        run: python3 scripts/release.py prepare
+      - name: Check out prepared release commit
+        if: steps.image.outputs.automatic == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.release.outputs.commit }}
+      - name: Validate tagged installation image
+        if: github.ref_type == 'tag'
+        env:
+          EXPECTED_IMAGE: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          expected = os.environ['EXPECTED_IMAGE']
+          config = json.loads(Path('config.json').read_text())
+          actual = config.get('remote_images', {}).get('mythic_beaconcrypt')
+          if actual != expected:
+              raise SystemExit(f'config.json remote_images.mythic_beaconcrypt must be {expected!r}; commit it before creating this tag')
+          PY
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
@@ -159,6 +200,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build image
         id: build
+        if: steps.release.outputs.released != 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: Payload_Type/mythic_beaconcrypt
@@ -166,7 +208,7 @@ jobs:
           tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.release.outputs.commit || github.sha }}
             org.opencontainers.image.version=${{ steps.image.outputs.version }}
           # Complete branch builds as local OCI archives; tags use the registry exporter.
           outputs: ${{ steps.image.outputs.publish == 'true' && 'type=registry' || format('type=oci,dest={0}/mythic-beaconcrypt.oci.tar', runner.temp) }}
@@ -181,11 +223,25 @@ jobs:
       - name: Sign and verify published image
         if: steps.image.outputs.publish == 'true'
         env:
-          IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_VERSION: ${{ steps.image.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          RELEASED: ${{ steps.release.outputs.released }}
           CERTIFICATE_IDENTITY: https://github.com/${{ github.workflow_ref }}
         shell: bash
         run: |
-          cosign sign --yes "$IMAGE"
-          cosign verify "$IMAGE" \
+          image="${IMAGE_NAME}:${IMAGE_VERSION}"
+          if [[ "$RELEASED" != true ]]; then
+            image="${IMAGE_NAME}@${IMAGE_DIGEST}"
+            cosign sign --yes "$image"
+          fi
+          cosign verify "$image" \
             --certificate-identity "$CERTIFICATE_IDENTITY" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: Promote verified release
+        if: steps.image.outputs.automatic == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.image.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+        run: python3 scripts/release.py finalize
