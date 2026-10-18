@@ -1,4 +1,4 @@
-.PHONY: native build test test-integration test-transport vet fmt-check run
+.PHONY: native build test test-integration test-poseidon test-transport vet fmt-check run
 
 native:
 	./scripts/build-native.sh
@@ -11,6 +11,9 @@ test: native
 
 test-integration: native
 	./scripts/test-mythic.sh
+
+test-poseidon: native
+	./scripts/test-poseidon.sh
 
 test-transport: native
 	@if [ -z "$$BEACONCRYPT_AMQP_TEST_URL" ]; then \

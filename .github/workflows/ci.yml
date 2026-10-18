@@ -54,6 +54,20 @@ jobs:
           cache-dependency-path: Payload_Type/mythic_beaconcrypt/go.sum
       - name: Install native link and release-download tools
         run: sudo apt-get update && sudo apt-get install --yes build-essential ca-certificates curl coreutils util-linux ripgrep
+      - name: Check out Poseidon source for native archive tests
+        uses: actions/checkout@v6
+        with:
+          repository: 0xd6cb6d73/poseidon
+          ref: crypto-shim
+          path: .build/poseidon-source
+      - name: Offline native release archive tests
+        working-directory: .
+        env:
+          POSEIDON_SOURCE: ${{ github.workspace }}/.build/poseidon-source
+        run: |
+          test -f "$POSEIDON_SOURCE/Payload_Type/poseidon/scripts/build-native.sh"
+          test -f "$POSEIDON_SOURCE/Payload_Type/poseidon/scripts/beaconcrypt-releases.txt"
+          python3 -m unittest discover -s integration/poseidon -p test_native_artifacts.py -v
       - name: Download Go dependencies
         run: go mod download
       - name: Verify pinned Beaconcrypt release archive

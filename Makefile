@@ -1,6 +1,6 @@
 SERVICE_DIR := Payload_Type/mythic_beaconcrypt
 
-.PHONY: setup native build test test-integration test-transport vet fmt-check run
+.PHONY: setup native build test test-integration test-poseidon test-transport vet fmt-check run
 
 setup: native
 	@if [ "$$(git config --local --get core.hooksPath)" = ".githooks" ]; then \
@@ -8,7 +8,7 @@ setup: native
 	fi
 	pre-commit install
 
-native build test test-integration test-transport vet run:
+native build test test-integration test-poseidon test-transport vet run:
 	$(MAKE) -C $(SERVICE_DIR) $@
 
 fmt-check:

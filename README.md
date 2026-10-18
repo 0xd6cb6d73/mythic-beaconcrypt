@@ -59,7 +59,7 @@ GitHub Actions checks formatting, vet, race tests, `govulncheck`, and `golangci-
 
 `make test-integration` runs actual Mythic components from a separate checkout, together with this provider and real Beaconcrypt Go clients. Mythic initializes its complete schema and migrations in a temporary PostgreSQL database. Registration and encrypted agent traffic pass through its real HTTP `/agent_message` endpoint, including staging, callback creation, UUID/base64 framing, provider RPCs, and PostgreSQL-backed state/result storage. It also checks two campaigns with separate identities and state records, cross-campaign rejection, independent revisions, and restart recovery.
 
-The test checks four clients across two campaigns, authenticated staging and check-in, ordinary agent messages and replies, cached establishment retries, and continued communication after restarting the provider with the same live clients. It runs the production initializers, HTTP router, AMQP listeners, and PostgreSQL storage in the test process so ordinary process-local Mythic authorization contexts can be validated. The native client dependency is added only to a temporary test copy of Mythic; neither production module gains a dependency on the other.
+The test checks four clients across two campaigns, authenticated staging and check-in, ordinary agent messages and replies, cached establishment retries, and continued communication after restarting the provider with the same live clients. It runs the production initializers, HTTP router, AMQP listeners, and PostgreSQL storage in the test process so ordinary process-local Mythic authorization contexts can be validated. The separate Poseidon integration suite uses the production Mythic server executable. The native client dependency is added only to a temporary test copy of Mythic; neither production module gains a dependency on the other.
 
 Set these variables before running the target:
 
@@ -80,6 +80,21 @@ CRYPTO_PROVIDER_TEST_DSN='postgres://mythic_test:mythic-integration-only@127.0.0
 The target fails if source or service configuration is missing and disables Go's test cache. Temporary source, test module changes, processes, and databases are cleaned up. Original checkouts remain untouched. CI provisions PostgreSQL and RabbitMQ and runs this target in a dedicated step. CI checks out `0xd6cb6d73/Mythic` at `crypto-shim` and archives that checkout's exact `HEAD` commit. The branch must be published on our fork for GitHub to fetch it.
 
 `make test` runs unit/native tests. `make test-transport`, with a broker URL, separately checks SDK queue ownership, concurrent RPC dispatch, and lazy campaign lifecycle using a small test peer. The real Mythic client integration is `make test-integration`. No production credentials are required.
+
+### Poseidon acceptance tests
+
+This repository also owns the [Poseidon acceptance suites](integration/poseidon/README.md):
+real payload builds, synchronized HTTP agents, transport retries, provider
+restart, and installed HTTP/TCP tests covering every AESPSK/Beaconcrypt pairing.
+Poseidon retains its agent, transport, builder, and sync component tests.
+
+Run `make test-poseidon` with `MYTHIC_SOURCE`, `POSEIDON_SOURCE`,
+`BEACONCRYPT_AMQP_TEST_URL`, and `CRYPTO_PROVIDER_TEST_DSN` set. Optional
+`MYTHIC_REF` and `POSEIDON_REF` select committed revisions, both defaulting to
+`crypto-shim`; the runner reports their exact SHAs and uses this provider checkout.
+The test environment needs a writable `/build`, matching Poseidon's normal
+builder. Full setup, installed-stack commands, and evidence/cleanup behavior are
+documented with the suites.
 
 ## Persistence with Beaconcrypt v0.5.2
 
@@ -231,3 +246,5 @@ A lost AMQP response or a successful commit's lost acknowledgement does not crea
 The initial implementation retains accepted-operation results and tombstones without pruning them. The advertised retention is a minimum, not a deletion deadline. Configurable per-campaign admission limits default to 1 MiB per message, 1,000 profiles, 1,000 sessions, and 5,000 retained requests; The message limit can be raised to 8 MiB, leaving room for native framing and JSON/base64 in Mythic's 16 MiB result limit; the 16 MiB checkpoint and 1 MiB metadata limits also apply. Normal admission reserves journal and metadata capacity for each session's first revocation and metadata capacity for its native-failure fence. Retrying that original revocation returns its immutable success; a fresh request ID for an already revoked session is rejected without journal growth. Capacity is rejected before more work where possible. Automatic expiry/compaction and sustained-load sizing remain follow-up work. Requests rejected before native work, or whose native failure yields an identical checkpoint, do not consume retained-operation slots. Some native registration failures advance snapshot bookkeeping; these remain unresolved and retained conservatively. Structural registration preflight rejects malformed frames before native work, while cryptographic validation stays in Beaconcrypt.
 
 Other optional settings are `BEACONCRYPT_NAMESPACE`, `BEACONCRYPT_STATE_ID`, `BEACONCRYPT_SERVER_KID`, `BEACONCRYPT_RPC_TIMEOUT` (1–30 seconds), `BEACONCRYPT_MAX_MESSAGE_BYTES`, `BEACONCRYPT_MAX_PROFILES`, `BEACONCRYPT_MAX_SESSIONS`, `BEACONCRYPT_MAX_REQUESTS`, and `BEACONCRYPT_RESULT_RETENTION_SECONDS`.
+
+The end-to-end matrix covers delegated TCP P2P sessions through polling HTTP egress, with AESPSK or Beaconcrypt independently on either hop. Provider operation results and incoming provider-session exchanges retain their retry handling. AESPSK egress uses Mythic's existing delivery semantics; a lost enclosing reply can lose delegated task delivery. Push processing, delegated task collection, and transport queues use upstream Mythic behavior; the current matrix does not verify push transports. The provider's protocol and native library are unchanged. An old database plus its old revision/fence values cannot prove freshness; historical restores require a deliberate identity/session recovery procedure rather than ordinary restart under old session references.
