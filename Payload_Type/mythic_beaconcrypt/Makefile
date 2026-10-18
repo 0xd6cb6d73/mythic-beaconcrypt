@@ -1,4 +1,4 @@
-.PHONY: native build test vet fmt-check run
+.PHONY: native build test test-integration test-transport vet fmt-check run
 
 native:
 	./scripts/build-native.sh
@@ -8,6 +8,16 @@ build: native
 
 test: native
 	./scripts/go.sh test -race ./...
+
+test-integration: native
+	./scripts/test-mythic.sh
+
+test-transport: native
+	@if [ -z "$$BEACONCRYPT_AMQP_TEST_URL" ]; then \
+		printf '%s\n' 'Set BEACONCRYPT_AMQP_TEST_URL to an isolated RabbitMQ broker; transport tests must not be skipped.' >&2; \
+		exit 1; \
+	fi
+	./scripts/go.sh test -race -count=1 -run '^(TestRunLifecycleOverAMQP|TestConcurrentRPCOverAMQP)$$' ./internal/service ./internal/transport
 
 vet: native
 	./scripts/go.sh vet ./...

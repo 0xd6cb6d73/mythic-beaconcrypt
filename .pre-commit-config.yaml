@@ -1,0 +1,18 @@
+default_stages: [pre-commit]
+fail_fast: true
+
+repos:
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -d
+        language: system
+        types: [go]
+        require_serial: true
+      - id: go-vet
+        name: go vet
+        entry: Payload_Type/mythic_beaconcrypt/scripts/go.sh vet ./...
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -1,0 +1,97 @@
+name: Go checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: Payload_Type/mythic_beaconcrypt
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mythic_test
+          POSTGRES_PASSWORD: mythic-integration-only
+          POSTGRES_DB: mythic_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mythic_test -d mythic_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      rabbitmq:
+        image: rabbitmq:4.1-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: provider_test
+          RABBITMQ_DEFAULT_PASS: transport-tests-only
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check copied crypto-provider template
+        working-directory: .
+        run: python3 scripts/check-template.py
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          check-latest: true
+          cache-dependency-path: Payload_Type/mythic_beaconcrypt/go.sum
+      - name: Install native link and release-download tools
+        run: sudo apt-get update && sudo apt-get install --yes build-essential ca-certificates curl coreutils util-linux ripgrep
+      - name: Download Go dependencies
+        run: go mod download
+      - name: Verify pinned Beaconcrypt release archive
+        run: |
+          ./scripts/build-native.sh
+          echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
+          echo "CGO_LDFLAGS=-L${GITHUB_WORKSPACE}/Payload_Type/mythic_beaconcrypt/.build/native-target/release" >> "$GITHUB_ENV"
+      - name: Check Go formatting
+        run: make -C ../.. fmt-check
+      - name: Vet
+        run: go vet ./...
+      - name: Unit and native tests
+        # Go's build cache does not track external static archives.
+        run: go test -a -race ./...
+      - name: SDK lifecycle tests
+        env:
+          BEACONCRYPT_AMQP_TEST_URL: amqp://provider_test:transport-tests-only@127.0.0.1:5672/
+        run: make test-transport
+      - name: Check vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.4.0
+          govulncheck ./...
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          working-directory: Payload_Type/mythic_beaconcrypt
+          args: --config ../../.golangci.yml
+      - name: Check out Mythic server source
+        uses: actions/checkout@v6
+        with:
+          repository: 0xd6cb6d73/Mythic
+          ref: crypto-shim
+          path: .build/mythic-source
+      - name: Real Mythic and Beaconcrypt client integration tests
+        env:
+          MYTHIC_SOURCE: ${{ github.workspace }}/.build/mythic-source
+          MYTHIC_REF: HEAD
+          BEACONCRYPT_AMQP_TEST_URL: amqp://provider_test:transport-tests-only@127.0.0.1:5672/
+          CRYPTO_PROVIDER_TEST_DSN: postgres://mythic_test:mythic-integration-only@127.0.0.1:5432/mythic_test?sslmode=disable
+        run: make test-integration

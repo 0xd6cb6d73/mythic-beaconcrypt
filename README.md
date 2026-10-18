@@ -17,7 +17,7 @@ For a new provider, start with the crypto-provider template proposed for Example
 | `internal/engine`, `internal/native` | Beaconcrypt sessions, durable checkpoints/results, and native-library adapter |
 | `scripts/build-native.sh`, `scripts/beaconcrypt-releases.txt` | Beaconcrypt's pinned release archives and link preparation |
 
-The copied production files are listed in [`template.json`](template.json), which records their SHA-256 digests and the exact template commit. The local checker verifies that they still match after substituting this repository's Go module path. Provider-specific behavior belongs behind `internal/provider`, rather than in the copied transport or dispatch code. To check the scaffold locally, run:
+The copied production files are listed in [`template.json`](template.json), which records their SHA-256 digests and the exact template commit. CI checks that they still match after substituting this repository's Go module path. Provider-specific behavior belongs behind `internal/provider`, rather than in the copied transport or dispatch code. To check the scaffold locally, run:
 
 ```sh
 python3 scripts/check-template.py
@@ -38,17 +38,48 @@ The Go module pins MythicContainer `v1.7.0-rc5`, which resolves to the reviewed 
 
 ## Build and development
 
-Install Go 1.26+ (production uses patched Go 1.27.2), a C compiler, `curl`, `sha256sum`, `flock`, and `ripgrep`. Builds support Linux amd64 and arm64 and use the matching published Beaconcrypt archive. On Debian/Ubuntu, install the tools with `apt install build-essential curl coreutils util-linux ripgrep`. Rust and the Cap'n Proto compiler are not required.
+Install [pre-commit](https://pre-commit.com/#install), Go 1.26+ (production uses patched Go 1.27.2), a C compiler, `curl`, `sha256sum`, `flock`, and `ripgrep`. Builds support Linux amd64 and arm64 and use the matching published Beaconcrypt archive. On Debian/Ubuntu, install the tools with `apt install build-essential curl coreutils util-linux ripgrep`. Rust and the Cap'n Proto compiler are not required.
 
 ```sh
+make setup
 make build
 make test
 make vet
 ```
 
+`make setup` downloads and verifies the pinned native dependency and runs `pre-commit install` using `.pre-commit-config.yaml`. It also removes this repository's legacy `.githooks` setting when present. The hooks check staged Go source with `gofmt -d` and run `go vet ./...`; they never reformat or stage source automatically. Clones must run `make setup` to enable the hooks. Run `pre-commit run --all-files` to check the entire repository.
+
 `scripts/build-native.sh` downloads the host's `gobinds` static archive from the exact Beaconcrypt GitHub release pinned in `go.mod`. `scripts/beaconcrypt-releases.txt` records each supported version, Rust target, asset name, and SHA-256. Every cache hit verifies the archive checksum, including caches left by earlier source builds. Downloads are checked before atomic publication under a cache lock; failed downloads leave the previous cache intact. An unlisted version or target fails explicitly and must be added with a verified release checksum. There is no source-build fallback.
 
 The cache remains `.build/native-target/release/libbeaconcrypt.a` with a matching `module-version` file. `scripts/go.sh` uses this archive for cgo and refuses a missing or differently pinned dependency. The Go module cache is unchanged. The Docker build uses the same downloader and a C compiler, without Rust or Cap'n Proto build tools. When replacing a source-built archive at the same module version, run `go clean -cache` once before manual builds: Go does not track changes to external static libraries in its build cache. Fresh container builds already relink the downloaded archive.
+
+GitHub Actions checks formatting, vet, race tests, `govulncheck`, and `golangci-lint`. Native archive preparation runs before analysis so cgo packages are included.
+
+### Client integration tests
+
+`make test-integration` runs actual Mythic components from a separate checkout, together with this provider and real Beaconcrypt Go clients. Mythic initializes its complete schema and migrations in a temporary PostgreSQL database. Registration and encrypted agent traffic pass through its real HTTP `/agent_message` endpoint, including staging, callback creation, UUID/base64 framing, provider RPCs, and PostgreSQL-backed state/result storage. It also checks two campaigns with separate identities and state records, cross-campaign rejection, independent revisions, and restart recovery.
+
+The test checks four clients across two campaigns, authenticated staging and check-in, ordinary agent messages and replies, cached establishment retries, and continued communication after restarting the provider with the same live clients. It runs the production initializers, HTTP router, AMQP listeners, and PostgreSQL storage in the test process so ordinary process-local Mythic authorization contexts can be validated. The native client dependency is added only to a temporary test copy of Mythic; neither production module gains a dependency on the other.
+
+Set these variables before running the target:
+
+- `MYTHIC_SOURCE`: the root of a Mythic Git checkout containing the generic crypto-provider support.
+- `MYTHIC_REF`: optional local commit/ref, default `crypto-shim`. The runner archives this committed source and reports its full SHA. Working-tree changes are excluded.
+- `BEACONCRYPT_AMQP_TEST_URL`: an isolated RabbitMQ broker URL.
+- `CRYPTO_PROVIDER_TEST_DSN`: a PostgreSQL URL for an isolated test instance. Its user needs `CREATEDB`; the test creates and drops a uniquely named database.
+
+For example, from this repository with disposable test services already running:
+
+```sh
+MYTHIC_SOURCE=~/Mythic \
+BEACONCRYPT_AMQP_TEST_URL='amqp://provider_test:transport-tests-only@127.0.0.1:5673/' \
+CRYPTO_PROVIDER_TEST_DSN='postgres://mythic_test:mythic-integration-only@127.0.0.1:5433/mythic_test?sslmode=disable' \
+  make test-integration
+```
+
+The target fails if source or service configuration is missing and disables Go's test cache. Temporary source, test module changes, processes, and databases are cleaned up. Original checkouts remain untouched. CI provisions PostgreSQL and RabbitMQ and runs this target in a dedicated step. CI checks out `0xd6cb6d73/Mythic` at `crypto-shim` and archives that checkout's exact `HEAD` commit. The branch must be published on our fork for GitHub to fetch it.
+
+`make test` runs unit/native tests. `make test-transport`, with a broker URL, separately checks SDK queue ownership, concurrent RPC dispatch, and lazy campaign lifecycle using a small test peer. The real Mythic client integration is `make test-integration`. No production credentials are required.
 
 ## Persistence with Beaconcrypt v0.5.2
 
