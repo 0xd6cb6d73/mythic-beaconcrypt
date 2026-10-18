@@ -69,14 +69,9 @@ func TestBeaconcryptMythicE2E(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := &http.Client{Timeout: 15 * time.Second}
 	endpoint := server.URL
-	awaitE2E(t, ctx, nil, func() bool {
-		response, err := client.Get(endpoint + "/health")
-		if err != nil {
-			return false
-		}
-		defer response.Body.Close()
-		return response.StatusCode == http.StatusOK
-	}, "actual Mythic HTTP/DB/AMQP startup")
+	// httptest.NewServer has already opened the HTTP listener. Wait for the
+	// database and crypto RPC consumers, rather than unrelated gRPC health state.
+	waitE2EMythicReady(t, ctx)
 	db := database.DB
 	t.Cleanup(func() { _ = db.Close() })
 	var operationID, operatorID int
@@ -637,6 +632,33 @@ func assertE2EStore(t *testing.T, db *sqlx.DB, name string, epoch int64) {
 	if err := db.Get(&authResults, `SELECT count(*) FROM crypto_provider_result r JOIN consuming_container c ON c.id=r.provider_id WHERE c.name=$1 AND result ? 'auth_context'`, name); err != nil || authResults != 0 {
 		t.Fatalf("transient auth persisted in real provider journal: %v", err)
 	}
+}
+
+// Inspect through Mythic's own connection because its RPC queues are exclusive.
+// Passive inspection never creates a missing queue or changes its bindings.
+func waitE2EMythicReady(t *testing.T, ctx context.Context) {
+	t.Helper()
+	connection, err := rabbitmq.RabbitMQConnection.GetConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitE2E(t, ctx, nil, func() bool {
+		if database.DB.PingContext(ctx) != nil {
+			return false
+		}
+		for _, name := range []string{"mythic_consume_consuming_container_sync", "mythic_rpc_crypto_provider_storage"} {
+			channel, err := connection.Channel()
+			if err != nil {
+				return false
+			}
+			queue, err := channel.QueueDeclarePassive(name, true, true, true, false, nil)
+			_ = channel.Close()
+			if err != nil || queue.Consumers == 0 {
+				return false
+			}
+		}
+		return true
+	}, "actual Mythic database and crypto RPC consumer startup")
 }
 
 // A campaign owner is created or restored on its first request, so readiness
