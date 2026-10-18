@@ -1,80 +1,202 @@
 # mythic-beaconcrypt
 
-This repository instantiates the crypto-provider template before adding the Beaconcrypt protocol. Paths below are relative to `Payload_Type/mythic_beaconcrypt`.
+An external Beaconcrypt cryptographic provider for Mythic 4.0 beta. Mythic owns transport, framing, application messages, callback routing, and the generic provider/storage APIs; this service implements the existing Beaconcrypt protocol and persists a separate server identity and session set for each Mythic campaign (operation) through Mythic's opaque storage API.
 
-This standalone Go service shows the Mythic crypto-provider API without a particular cryptographic implementation. It registers `beaconcrypt`, describes the `example` scheme and explicitly rejects the six protocol methods with `not_implemented`. Replace `internal/provider` with your implementation before building an agent that selects it.
+This repository follows the [ExampleContainers](https://github.com/MythicMeta/ExampleContainers) layout: `config.json` selects the installable service in `Payload_Type/mythic_beaconcrypt`. That directory contains the Go module, Dockerfile, native build scripts, and runtime code. It consumes Beaconcrypt without changing its protocol, Rust implementation, Go bindings, or proof tree, and has no dependency on the Mythic server module or direct PostgreSQL access.
 
-This example requires [Mythic's crypto-provider API v1](https://github.com/0xd6cb6d73/Mythic/blob/611243e0fb7658b5af287904306ee7c52286ed76/mythic-docker/src/crypto/provider/README.md). The pinned MythicContainer SDK supplies RabbitMQ transport and request authorization, but does not yet have a crypto service registration API. The small adapter here supplies that lifecycle; it does not register a payload type or C2 profile.
+## Starting from the template
 
-## Files to keep and files to replace
+For a new provider, start with the crypto-provider template proposed for ExampleContainers. [`template.json`](template.json) identifies its source repository and exact revision. This implementation copies that template's production scaffold and supplies Beaconcrypt behind its provider interface. The scaffold is ordinary source in this repository; there is no runtime or build dependency on the template repository.
 
-| Path | Purpose |
+| Code under `Payload_Type/mythic_beaconcrypt` | Responsibility |
 | --- | --- |
-| `main.go` | Load provider configuration, connect the backend to the service, and stop on SIGTERM. |
-| `internal/provider` | Replace this package with your protocol, agent configuration, key handling, state ownership and limits. |
-| `internal/service` | Shared configuration, registration, authorization checks and process lifecycle. |
-| `internal/transport` | SDK adapter, exclusive queues, bounded concurrent RPC and reply handling. |
-| `internal/wire` | API v1 JSON contract, validation, routing and optional opaque state types. |
-| `internal/storage` | Authenticated client for Mythic's optional opaque state store. |
+| `main.go`, `internal/service` | Generic startup, provider registration, and RPC dispatch |
+| `internal/transport`, `internal/storage/client.go` | Generic SDK/AMQP integration and Mythic storage calls |
+| `internal/wire` | Mythic's versioned provider and storage message contracts |
+| `internal/provider` | Beaconcrypt settings and construction of the protocol engine |
+| `internal/engine`, `internal/native` | Beaconcrypt sessions, durable checkpoints/results, and native-library adapter |
+| `scripts/build-native.sh`, `scripts/beaconcrypt-releases.txt` | Beaconcrypt's pinned release archives and link preparation |
 
-The copied generic files are pinned in the root `template.json`. Run `python3 scripts/check-template.py` from the repository root to verify their normalized SHA-256 digests; an optional `--source /path/to/ExampleContainers` also verifies the recorded source commit. The `internal/provider` package retains the template's explicit protocol stubs. Cryptographic algorithms, native libraries and their build dependencies belong in the replaceable provider package and its Docker build.
-
-## Beaconcrypt native adapter
-
-`internal/native` now implements the protocol-independent interfaces in `internal/engine/interfaces.go` using Beaconcrypt v0.5.2. Native tests exercise real registration, packet authentication, checkpoint restoration, and persistence failures. The `internal/provider` package still exposes the template's explicit `example` protocol stubs; these native primitives are not yet connected to Mythic requests.
-
-Install Go 1.26+ (the container uses Go 1.27.2), a C compiler, `curl`, `sha256sum`, and `flock`. `make native` downloads the host's Linux amd64 or arm64 `gobinds` archive from the pinned GitHub release and verifies its SHA-256 from `scripts/beaconcrypt-releases.txt`. Cache hits are also verified. Rust and Cap'n Proto source builds are not needed, and unsupported releases or targets fail explicitly. The cache lives under `Payload_Type/mythic_beaconcrypt/.build/native-target`.
-
-Run `make build`, `make test`, or `make vet` from the repository root. These commands prepare the native archive before invoking Go with its cgo link path. The container uses the same release downloader and keeps its non-root runtime. `make run` builds and starts the service; provide the RabbitMQ settings shown in `.env.example`.
-
-## Run and install
-
-Run `make test` or `make build` from the repository root; these now prepare the native dependency. For a local broker, export `RABBITMQ_URL` or the connection settings shown in `.env.example`, then run `make run`. The SDK also reads an `.env` file beside the executable. The Dockerfile pre-creates that file and runs the binary as an unprivileged user.
-
-Install this service repository from the Mythic checkout:
+The copied production files are listed in [`template.json`](template.json), which records their SHA-256 digests and the exact template commit. The local checker verifies that they still match after substituting this repository's Go module path. Provider-specific behavior belongs behind `internal/provider`, rather than in the copied transport or dispatch code. To check the scaffold locally, run:
 
 ```sh
-./mythic-cli install folder /path/to/mythic-beaconcrypt
+python3 scripts/check-template.py
+# Optionally verify the recorded source against an existing checkout at its pinned commit:
+python3 scripts/check-template.py --source /path/to/ExampleContainers
 ```
 
-Mythic supplies the `RABBITMQ_*` settings to installed containers. `BEACONCRYPT_PROVIDER_NAME` defaults to `beaconcrypt`; `BEACONCRYPT_RPC_TIMEOUT` defaults to `20s`. The pinned SDK supports `amqp` URLs. Restart the container after changing connection configuration.
+When deliberately adopting a template update, first copy the changed scaffold with the module path substituted, then run `python3 scripts/check-template.py --record --source /path/to/ExampleContainers` from this repository. The command records only committed source files and checks the local copy before writing the manifest. Review the template commit and manifest change together.
 
-## Required provider lifecycle
+## Compatibility
 
-`service.Run` starts exclusive provider, resync and startup queues before announcing the service with `consuming_container_sync`. Registration includes `type: crypto`, a version and capabilities; the business route is `<registered-name>_crypto_provider_rpc`. The resync queue re-announces the same definition. Startup notifications do not supply a credential to retain, and constructing a backend does not create campaign state.
+- Mythic's generic crypto-provider API v1 on `crypto-shim`, using plain JSON RPC and ordinary Mythic authorization-context headers.
+- Mythic `crypto-shim` with request-scoped container identity. Storage uses Mythic's standard serial RPC dispatch. Earlier MAC-envelope revisions are incompatible with this wire format.
+- MythicContainer's [`Mythic-v4.0.0` branch](https://github.com/MythicMeta/MythicContainer/tree/Mythic-v4.0.0), reviewed at `a4c7e05f17b02e86820cc92ca425095bbe3b19be`; consuming-container wire version `v1.5.0`.
+- Beaconcrypt `v0.5.2`, tag commit `b32af5768adae7e97240b660e1e9139b884bd056`, pinned in `go.mod` and the matching native archive.
 
-Every business request carries the transient Mythic authorization context in both its RabbitMQ header and JSON body. The service checks that they agree before calling the backend. Preserve the supplied `context.Context` for every storage RPC, echo `auth_context`, `request_id` and `operation_scope_id` in responses, and never persist or log the authorization context. It changes between attempts and is excluded from request digests.
+The Go module pins MythicContainer `v1.7.0-rc5`, which resolves to the reviewed branch commit. The SDK does not yet have a crypto service registry or typed storage helpers. The provider registers custom context-aware SDK queues, starts them with `rabbitmq.Initialize` / `rabbitmq.StartServices`, and uses the SDK RPC API for sync and storage calls. The local adapter supplies the crypto messages and terminal failure handling around those APIs. The business RPC consumer uses bounded concurrent workers on the SDK-owned connection; lifecycle queues and outbound calls keep the SDK APIs. It does not modify or fork the SDK. `internal/wire` carries the versioned Mythic-owned contract types. Fixed AMQP, HTTP/2, and gRPC dependency versions override older transitive versions from the SDK.
 
-The SDK owns the connection and outgoing RPC correlation. The adapter processes a bounded number of business requests concurrently so one operation cannot block all other operations. It terminates the worker after connection loss or an uncertain transport timeout; let the container supervisor start a fresh process.
+## Build and development
 
-## Implementing the protocol
+Install Go 1.26+ (production uses patched Go 1.27.2), a C compiler, `curl`, `sha256sum`, `flock`, and `ripgrep`. Builds support Linux amd64 and arm64 and use the matching published Beaconcrypt archive. On Debian/Ubuntu, install the tools with `apt install build-essential curl coreutils util-linux ripgrep`. Rust and the Cap'n Proto compiler are not required.
 
-`internal/provider.Provider.Handle` is the dispatch point:
+```sh
+make build
+make test
+make vet
+```
 
-| Method | Required implementation |
-| --- | --- |
-| `describe` | Return the same capabilities used during registration. Implemented here. |
-| `prepare_profile` | Create or restore a provider profile and return an opaque profile reference and agent configuration. |
-| `begin_session` | Authenticate the agent's initial message and routing claims, establish a session, and return its reply and opaque session identity. |
-| `open` | Authenticate and decrypt one incoming message within the selected operation and session. |
-| `seal` | Encrypt and authenticate one outgoing message within that session. |
-| `get_operation` | Resolve a previous request's outcome using its original request ID. |
-| `revoke_session` | Revoke the selected session and prevent subsequent use. |
+`scripts/build-native.sh` downloads the host's `gobinds` static archive from the exact Beaconcrypt GitHub release pinned in `go.mod`. `scripts/beaconcrypt-releases.txt` records each supported version, Rust target, asset name, and SHA-256. Every cache hit verifies the archive checksum, including caches left by earlier source builds. Downloads are checked before atomic publication under a cache lock; failed downloads leave the previous cache intact. An unlisted version or target fails explicitly and must be added with a verified release checksum. There is no source-build fallback.
 
-Validate every request before processing. Honor the advertised size limit and result-retention interval, and preserve the operation scope when looking up profiles, sessions and request IDs. Keep cryptographic formats opaque to Mythic. A `rejected` failure promises there is no unresolved cryptographic effect; after an ambiguous stateful effect, return `unresolved` and resolve it through `get_operation` instead of retrying it as new work.
+The cache remains `.build/native-target/release/libbeaconcrypt.a` with a matching `module-version` file. `scripts/go.sh` uses this archive for cgo and refuses a missing or differently pinned dependency. The Go module cache is unchanged. The Docker build uses the same downloader and a C compiler, without Rust or Cap'n Proto build tools. When replacing a source-built archive at the same module version, run `go clean -cache` once before manual builds: Go does not track changes to external static libraries in its build cache. Fresh container builds already relink the downloaded archive.
 
-This skeleton advertises `volatile` session persistence because it has no durable implementation. It creates no profiles or sessions and does not claim usable encryption. A real implementation must provide repeatable outcomes for repeated request IDs, reject reuse with changed inputs, and decide whether session state survives a worker restart. Advertise `durable` only when that promise is implemented.
+## Persistence with Beaconcrypt v0.5.2
 
-The optional `storage.Store` passed to `provider.New` stores opaque provider snapshots and exact operation results through Mythic RPC. For a durable implementation, scope state keys to the Mythic operation, acquire an owner epoch, and commit snapshot and result together using the expected revision and owner epoch. A stale owner must stop processing. Storage `request_id` values identify transport calls; the immutable operation request ID and input digest identify the cryptographic effect. State access must use the current authenticated request context. The example deliberately performs no storage calls at startup or during `describe`.
+The new Go `SnapshotStore` interface was evaluated against Mythic's durable
+storage contract. `Load` returns the trusted current snapshot;
+`CompareAndSwap` compares the complete expected lineage, generation, and digest,
+validates its successor, and durably commits the replacement before returning
+success. Creation commits generation zero; restoration commits an activation
+generation. Failed or uncertain CAS suppresses operation output and poisons that
+native owner. Snapshot digests identify bytes; storage remains responsible for
+integrity, provenance, coordination, and rollback protection.
 
-## Agent-side integration
+This provider retains Beaconcrypt's documented checkpoint compatibility
+constructors, `NewServer` and `NewServerFromState`. They let the engine publish
+its snapshot, provider metadata, and exact immutable response together through
+one Mythic storage commit before releasing any result. Mythic's owner epoch and
+revision checks remain authoritative. Initial and restored snapshots are checked
+with the library's `ParseSnapshotHead` / `ValidateSnapshotSuccessor` helpers;
+restoration must produce the exact next activation generation.
 
-Installing this service supplies the server half of a protocol. The agent needs its own matching implementation and compile-time configuration. Use the qualified selection `provider:<registered-name>:<scheme>`; for this skeleton that is `provider:beaconcrypt:example`. Return only the agent configuration your protocol needs from `prepare_profile`.
+A direct caller-store adapter cannot preserve that transaction: its CAS runs
+before Beaconcrypt returns the generated ciphertext, plaintext, or registration
+response. Saving the snapshot in that callback and saving the response afterward
+would leave a crash interval with consumed ratchet state but no recoverable
+response or session mapping. Returning CAS success for an in-memory buffer while
+waiting for the outer commit would violate the durable-store contract. A pending
+operation journal could fence that interval but could not reconstruct lost
+output; it would weaken the existing result recovery guarantee. The production
+provider therefore does not wire a separate snapshot CAS into Mythic storage.
+Native caller-store tests exercise publication ordering and the durable callback
+contract using a fault-injected in-memory store, including owner fencing,
+rejection neutrality, restoration, and lost acknowledgements.
 
-The payload container must advertise `supported_crypto_schemes: ["example"]` in its payload-type sync definition. These are bare scheme names, independent of the provider worker's registered name. Mythic passes the profile's opaque `agent_config` bytes to the builder as the base64 string `provider_config`; decode it before parsing the provider-specific configuration, and embed it for the selected C2 profile.
+Typed native persistence failures stay unresolved, even if an exported checkpoint
+appears unchanged. The provider commits any exportable checkpoint and immutable
+failure together, releases no native output, and retires the handle. Ordinary
+rejected receives still leave the checkpoint unchanged and consume no durable
+request slot. The v0.5.2 binary version-2 snapshot format matches the prior pinned
+library. Campaign isolation changes the provider's storage layout: old unscoped
+local-development payloads and callbacks must be rebuilt. No migration from the
+shared server record is provided. For campaign records, always restore the
+current trusted Mythic checkpoint rather than an older backup.
 
-For an agent with a provider registry, add the provider's session implementation, register its scheme, and connect its target-specific build preparation and configuration parsing. Profiles should use the shared crypto session interface rather than compare the provider name to a particular library. Do not add Beaconcrypt dependencies or checks to a different provider's agent plumbing.
+## Configuration and campaign creation
 
-## License
+Use a backend containing the generic provider migration and RPC handlers,
+including request-scoped container authorization. RPC bodies are ordinary JSON.
+Mythic sends its normal transient authorization-context token in the AMQP header;
+the provider forwards that context for storage calls. Mythic binds the context to
+the registered provider and derives storage ownership from that identity.
+Provider-specific shared secrets and message MAC envelopes are not used.
 
-The original scaffold is available under the BSD Zero Clause terms reproduced in `NOTICE`. The adapted Mythic wire contract retains its BSD 3-Clause notice there. Keep these notices when copying the example into a new repository.
+The request context exists only while the crypto request is in flight. Tokens
+are excluded from durable request digests, snapshots, and retained results. The
+provider does not retain operator credentials from container startup messages.
+
+Set `RABBITMQ_URL` to the Mythic AMQP URL, or supply `RABBITMQ_PASSWORD` with optional `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, and `RABBITMQ_VHOST`. Defaults match the container SDK: `mythic_rabbitmq:5672`, user `mythic_user`, vhost `mythic_vhost`. The pinned SDK only supports AMQP; AMQPS is rejected. Broker confidentiality therefore requires a protected network or an external secure tunnel. Avoid printing credential-bearing environment values.
+
+Start the service without a separate initialization command:
+
+```sh
+export RABBITMQ_URL='<Mythic broker URL>'
+Payload_Type/mythic_beaconcrypt/.build/mythic-beaconcrypt
+```
+
+The first authenticated `prepare_profile` request for a campaign creates its
+server identity and durable state. Later builds in the same campaign reuse that
+identity. Requests for existing profiles and sessions only restore established
+state; they cannot create a replacement identity when a record is missing.
+Startup and capability discovery do not create or acquire any campaign state.
+Keep the namespace and state-ID prefix stable across restarts.
+
+For installation, run from the Mythic checkout:
+
+```sh
+./mythic-cli install folder ~/mythic-beaconcrypt
+```
+
+The installer uses `Payload_Type` as the service bundle location; this provider registers as a crypto consuming service. Mythic supplies the standard `RABBITMQ_*` values. The included optional override sets the provider name and runtime restrictions:
+
+```sh
+docker compose -f docker-compose.yml -f ~/mythic-beaconcrypt/compose.provider.yaml.example \
+  up -d --no-deps mythic_beaconcrypt
+```
+
+Mythic and its storage RPC handlers must already be running. If using the optional override, include it on subsequent Compose operations too, including after Mythic regenerates its configuration.
+
+The image contains an empty `.env` beside its binary because SDK initialization requires that file. Provider-specific settings are read from the process environment; copying the repository's `.env.example` alone does not load them.
+
+The service needs one active replica per registered provider. It binds exclusive AMQP consumers before accepting campaign requests, so a duplicate process cannot displace campaign owners during startup. Broker loss or an uncertain SDK transport timeout ends the process; the Compose restart policy starts a fresh worker, which restores campaigns lazily as requests arrive. SDK retries can repeat an identical storage request after an uncertain publish; durable request digests and operation results provide reconciliation.
+
+Select `provider:beaconcrypt:beaconcrypt` in a Mythic crypto parameter. A custom `BEACONCRYPT_PROVIDER_NAME` changes the middle component and must match the registered consuming-service name. Payload builders and agents must support this qualified provider selection.
+
+## Existing agent protocol
+
+Profile preparation returns JSON build material as opaque `agent_config` bytes, projected by Mythic as base64 `provider_config`:
+
+```json
+{"version":1,"server_kid":"0","server_public_key":"<base64 public key>"}
+```
+
+The same JSON is returned in the optional `enc_key`/`dec_key` compatibility fields for builders that already consume the historical material shape. No private identity or ratchet checkpoint is included.
+
+The initial body is the historical plaintext staging request, inside Mythic's existing payload UUID/base64 framing:
+
+```json
+{"action":"staging","session_id":"<client correlation>","data":"<base64 GenerateRegistration bytes>"}
+```
+
+The provider calls `RegisterBeacon` with authenticated initial JSON containing `action: staging`, `status: success`, the supplied next UUID, and the exact session ID. Its outer reply contains `action`, `uuid`, `session_id`, and base64 registration `data`. Clients must validate the authenticated initial message before adopting the new UUID. Subsequent check-in/callback bodies use the same live Beaconcrypt client session; Mythic keeps its normal application messages and UUID transition.
+
+Before native decryption, a bounded Cap'n Proto parser checks that the advertised sender matches the routed session. Native authentication remains authoritative, and the returned authenticated sender is checked again. The service uses only `EncryptAndUpdate` and `DecryptAndUpdate` for server traffic and discards their non-restorable observational state strings.
+
+## Persistence and failure behavior
+
+Each Mythic campaign (`operation_scope_id`) has its own Beaconcrypt server
+identity, native handle, mutex, and durable record. Its key is
+`(BEACONCRYPT_NAMESPACE, <BEACONCRYPT_STATE_ID>/campaign/<operation ID>)`.
+`BEACONCRYPT_STATE_ID` is a prefix, defaulting to `server`. Authenticated Mythic operation
+scope selects the owner; a request cannot select another campaign by supplying
+its namespace, state ID, profile reference, or session reference.
+
+Each campaign record contains its whole native server checkpoint in `state_blob`,
+with that campaign's profiles, sessions, revocations, and retained-request metadata
+in `provider_json`. A campaign's callbacks share its snapshot and serialize under
+its mutex. Different campaigns have independent state revisions, admission
+budgets, and locks; no router lock covers native work or storage RPCs. The
+provider's bounded concurrent business consumer can handle different campaigns
+concurrently, while Mythic's generic storage RPC consumer keeps its standard
+serial dispatch. A blocked storage request can delay storage requests from other
+campaigns; independent state ownership does not guarantee independent storage
+latency. The existing Mythic schema and crypto-provider contract are sufficient.
+
+For each native operation the provider still saves the whole campaign snapshot;
+it does not persist per-callback deltas. The ownership check currently reads the
+whole campaign row. A campaign mutex covers native work, export, and conditional
+state/result commit. No ciphertext or plaintext is released before its matching
+commit is authoritative. Replay returns the stored business result with the
+current transient authorization context.
+
+Restoration acquires an owner epoch, restores the native checkpoint, and immediately saves its newly activated export before serving requests. A stale writer discards its live state and cannot automatically steal ownership back. Lost commit replies are reconciled through immutable storage results; unresolved persistence never authorizes speculative native output.
+
+Native errors are handled conservatively. An unchanged pre/post checkpoint can establish an effect-free rejection; typed native persistence failures remain unresolved even when those bytes match. Live handles are retired after native failures, and checkpoint/export failures never release output.
+
+For an unresolved native receive or send failure whose checkpoint can be saved, the provider records the failed request ID on that session inside its opaque `provider_json`, atomically with the native checkpoint and failed-operation result. Fresh receive/send requests on that session require reestablishment. Replaying the original failed request, looking up its result, and revoking the session remain available; other sessions in the campaign continue normally. Mythic does not interpret or maintain this Beaconcrypt-specific session fence.
+
+A lost AMQP response or a successful commit's lost acknowledgement does not create this fence. The native checkpoint and exact operation result are committed together, so retrying the same request ID recovers the stored result. A failure before an authoritative checkpoint commit releases no output and retires the handle before restoration. Revocation is a durable service tombstone and cannot erase peer secrets from a native checkpoint because the current public library has no removal API.
+
+The initial implementation retains accepted-operation results and tombstones without pruning them. The advertised retention is a minimum, not a deletion deadline. Configurable per-campaign admission limits default to 1 MiB per message, 1,000 profiles, 1,000 sessions, and 5,000 retained requests; The message limit can be raised to 8 MiB, leaving room for native framing and JSON/base64 in Mythic's 16 MiB result limit; the 16 MiB checkpoint and 1 MiB metadata limits also apply. Normal admission reserves journal and metadata capacity for each session's first revocation and metadata capacity for its native-failure fence. Retrying that original revocation returns its immutable success; a fresh request ID for an already revoked session is rejected without journal growth. Capacity is rejected before more work where possible. Automatic expiry/compaction and sustained-load sizing remain follow-up work. Requests rejected before native work, or whose native failure yields an identical checkpoint, do not consume retained-operation slots. Some native registration failures advance snapshot bookkeeping; these remain unresolved and retained conservatively. Structural registration preflight rejects malformed frames before native work, while cryptographic validation stays in Beaconcrypt.
+
+Other optional settings are `BEACONCRYPT_NAMESPACE`, `BEACONCRYPT_STATE_ID`, `BEACONCRYPT_SERVER_KID`, `BEACONCRYPT_RPC_TIMEOUT` (1–30 seconds), `BEACONCRYPT_MAX_MESSAGE_BYTES`, `BEACONCRYPT_MAX_PROFILES`, `BEACONCRYPT_MAX_SESSIONS`, `BEACONCRYPT_MAX_REQUESTS`, and `BEACONCRYPT_RESULT_RETENTION_SECONDS`.

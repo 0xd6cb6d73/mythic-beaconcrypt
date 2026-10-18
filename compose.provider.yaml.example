@@ -1,0 +1,9 @@
+# Apply alongside Mythic's generated docker-compose.yml, from the Mythic root.
+services:
+  mythic_beaconcrypt:
+    environment:
+      BEACONCRYPT_PROVIDER_NAME: beaconcrypt
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
