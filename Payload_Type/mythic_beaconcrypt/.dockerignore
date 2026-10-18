@@ -1,5 +1,6 @@
-.build
 .git
+.build
 .env
 .env.*
 !.env.example
+coverage.out

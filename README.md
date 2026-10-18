@@ -19,9 +19,17 @@ This example requires [Mythic's crypto-provider API v1](https://github.com/0xd6c
 
 The copied generic files are pinned in the root `template.json`. Run `python3 scripts/check-template.py` from the repository root to verify their normalized SHA-256 digests; an optional `--source /path/to/ExampleContainers` also verifies the recorded source commit. The `internal/provider` package retains the template's explicit protocol stubs. Cryptographic algorithms, native libraries and their build dependencies belong in the replaceable provider package and its Docker build.
 
+## Beaconcrypt native adapter
+
+`internal/native` now implements the protocol-independent interfaces in `internal/engine/interfaces.go` using Beaconcrypt v0.5.2. Native tests exercise real registration, packet authentication, checkpoint restoration, and persistence failures. The `internal/provider` package still exposes the template's explicit `example` protocol stubs; these native primitives are not yet connected to Mythic requests.
+
+Install Go 1.26+ (the container uses Go 1.27.2), a C compiler, `curl`, `sha256sum`, and `flock`. `make native` downloads the host's Linux amd64 or arm64 `gobinds` archive from the pinned GitHub release and verifies its SHA-256 from `scripts/beaconcrypt-releases.txt`. Cache hits are also verified. Rust and Cap'n Proto source builds are not needed, and unsupported releases or targets fail explicitly. The cache lives under `Payload_Type/mythic_beaconcrypt/.build/native-target`.
+
+Run `make build`, `make test`, or `make vet` from the repository root. These commands prepare the native archive before invoking Go with its cgo link path. The container uses the same release downloader and keeps its non-root runtime. `make run` builds and starts the service; provide the RabbitMQ settings shown in `.env.example`.
+
 ## Run and install
 
-Run `make test` from the repository root for the native-free tests, or `make build` to build the service. For a local broker, export `RABBITMQ_URL` or the connection settings shown in `.env.example`, then run `make run`. The SDK also reads an `.env` file beside the executable. The Dockerfile pre-creates that file and runs the binary as an unprivileged user.
+Run `make test` or `make build` from the repository root; these now prepare the native dependency. For a local broker, export `RABBITMQ_URL` or the connection settings shown in `.env.example`, then run `make run`. The SDK also reads an `.env` file beside the executable. The Dockerfile pre-creates that file and runs the binary as an unprivileged user.
 
 Install this service repository from the Mythic checkout:
 

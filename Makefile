@@ -1,8 +1,8 @@
 SERVICE_DIR := Payload_Type/mythic_beaconcrypt
 
-.PHONY: build test vet run fmt-check
+.PHONY: native build test vet run fmt-check
 
-build test vet run:
+native build test vet run:
 	$(MAKE) -C $(SERVICE_DIR) $@
 
 fmt-check:

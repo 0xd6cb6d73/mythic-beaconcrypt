@@ -1,13 +1,20 @@
-.PHONY: build test vet run
+.PHONY: native build test vet fmt-check run
 
-build:
-	CGO_ENABLED=0 go build -buildvcs=false -trimpath -o .build/crypto-provider .
+native:
+	./scripts/build-native.sh
 
-test:
-	go test -race ./...
+build: native
+	./scripts/go.sh build -buildvcs=false -trimpath -o .build/mythic-beaconcrypt .
 
-vet:
-	go vet ./...
+test: native
+	./scripts/go.sh test -race ./...
+
+vet: native
+	./scripts/go.sh vet ./...
+
+fmt-check:
+	@status=0; unformatted=$$(rg --files -0 -g '*.go' | xargs -0 gofmt -l) || status=$$?; \
+	if [ -n "$$unformatted" ]; then printf '%s\n' "$$unformatted"; exit 1; fi; exit $$status
 
 run: build
-	.build/crypto-provider
+	./.build/mythic-beaconcrypt

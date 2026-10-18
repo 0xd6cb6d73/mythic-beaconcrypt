@@ -3,12 +3,15 @@ module github.com/0xd6cb6d73/mythic-beaconcrypt
 go 1.26.0
 
 require (
+	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
+	github.com/0xd6cb6d73/beaconcrypt v0.5.2
 	github.com/MythicMeta/MythicContainer v1.7.0-rc5
 	github.com/google/uuid v1.6.0
 	github.com/rabbitmq/amqp091-go v1.13.0
 )
 
 require (
+	github.com/colega/zeropool v0.0.0-20230505084239-6fb4a4f75381 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
@@ -24,6 +27,7 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
