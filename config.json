@@ -6,6 +6,6 @@
   "exclude_documentation_wrapper": true,
   "exclude_agent_icons": true,
   "remote_images": {
-    "mythic_beaconcrypt": "ghcr.io/0xd6cb6d73/mythic-beaconcrypt:v0.1.4"
+    "mythic_beaconcrypt": "ghcr.io/0xd6cb6d73/mythic-beaconcrypt:v0.1.5"
   }
 }
