@@ -55,6 +55,25 @@ The cache remains `.build/native-target/release/libbeaconcrypt.a` with a matchin
 
 GitHub Actions checks formatting, vet, race tests, `govulncheck`, and `golangci-lint`. Native archive preparation runs before analysis so cgo packages are included.
 
+### Container images
+
+Every branch and tag push builds Linux amd64 and arm64 images. Branch builds export an OCI archive on the runner without publishing it. A tag push publishes to `ghcr.io/0xd6cb6d73/mythic-beaconcrypt:<git-tag>` after the Go checks pass. The image tag and OCI version label preserve the Git tag exactly, including a leading `v`; no `latest` or shortened version aliases are added. Git tags must fit the container tag format (1–128 letters, digits, underscores, dots or hyphens, starting with a letter, digit or underscore).
+
+The workflow authenticates to GHCR with `GITHUB_TOKEN` and signs the published multi-platform manifest digest using Cosign and GitHub OIDC. It verifies the signature before the job succeeds. No signing-key secret is required. Registry and OIDC write permissions are scoped to the image job; publication and signing run only for tag pushes with passing checks.
+
+For a published tag, verify and pull the image with:
+
+```sh
+version=v0.3.0 # Replace with the published Git tag.
+image="ghcr.io/0xd6cb6d73/mythic-beaconcrypt:$version"
+cosign verify "$image" \
+  --certificate-identity "https://github.com/0xd6cb6d73/mythic-beaconcrypt/.github/workflows/ci.yml@refs/tags/$version" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+docker pull "$image"
+```
+
+GHCR package visibility is configured separately from repository visibility. Log in to GHCR for private packages, or make the package public to allow anonymous pulls.
+
 ### Client integration tests
 
 `make test-integration` runs actual Mythic components from a separate checkout, together with this provider and real Beaconcrypt Go clients. Mythic initializes its complete schema and migrations in a temporary PostgreSQL database. Registration and encrypted agent traffic pass through its real HTTP `/agent_message` endpoint, including staging, callback creation, UUID/base64 framing, provider RPCs, and PostgreSQL-backed state/result storage. It also checks two campaigns with separate identities and state records, cross-campaign rejection, independent revisions, and restart recovery.
