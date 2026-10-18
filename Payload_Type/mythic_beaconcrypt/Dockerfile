@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install --yes --no-install-recommends ca-certifica
     && useradd --system --uid 65532 --no-create-home --shell /usr/sbin/nologin provider
 COPY --from=build /out/mythic-beaconcrypt /usr/local/bin/mythic-beaconcrypt
 COPY NOTICE /usr/share/doc/mythic-beaconcrypt/NOTICE
+COPY licenses /usr/share/doc/mythic-beaconcrypt/licenses
 WORKDIR /Mythic
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/mythic-beaconcrypt"]

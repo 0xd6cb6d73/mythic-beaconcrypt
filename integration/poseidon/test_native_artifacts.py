@@ -19,6 +19,10 @@ TRIPLES = {
     "amd64": "x86_64-unknown-linux-gnu",
     "arm64": "aarch64-unknown-linux-gnu",
 }
+DARWIN_TRIPLES = {
+    "amd64": "x86_64-apple-darwin",
+    "arm64": "aarch64-apple-darwin",
+}
 
 
 class NativeArtifactChecks:
@@ -105,11 +109,12 @@ shutil.copyfile(os.environ["NATIVE_TEST_RESPONSE"], output)
         self.fixtures[(version, triple)] = fixture
         return hashlib.sha256(fixture.read_bytes()).hexdigest()
 
-    def paths(self, architecture="amd64"):
+    def paths(self, architecture="amd64", platform="linux"):
         if self.kind == "provider":
             target = self.project / ".build/native-target"
         else:
-            target = self.cache_root / TRIPLES[architecture]
+            triples = DARWIN_TRIPLES if platform == "darwin" else TRIPLES
+            target = self.cache_root / triples[architecture]
         return target / "release/libbeaconcrypt.a", target / "module-version"
 
     def seed_cache(self, archive_bytes, version, architecture="amd64"):
@@ -119,9 +124,10 @@ shutil.copyfile(os.environ["NATIVE_TEST_RESPONSE"], output)
         marker.write_text(version + "\n")
         return archive, marker
 
-    def invoke(self, architecture="amd64", version=None, response=None, **overrides):
+    def invoke(self, architecture="amd64", version=None, response=None, platform="linux", **overrides):
         version = self.version if version is None else version
-        triple = TRIPLES.get(architecture, TRIPLES["amd64"])
+        triples = DARWIN_TRIPLES if platform == "darwin" else TRIPLES
+        triple = triples.get(architecture, TRIPLES["amd64"])
         fixture = self.fixtures.get((version, triple), self.fixtures[(self.version, TRIPLES["amd64"])])
         environment = dict(os.environ)
         environment.pop("POSEIDON_BEACONCRYPT_NATIVE_TARGET", None)
@@ -136,7 +142,7 @@ shutil.copyfile(os.environ["NATIVE_TEST_RESPONSE"], output)
         environment.update({key: str(value) for key, value in overrides.items()})
         arguments = ["bash", str(self.scripts / "build-native.sh")]
         if self.kind == "poseidon":
-            arguments.extend(("linux", architecture))
+            arguments.extend((platform, architecture))
             environment["POSEIDON_BEACONCRYPT_NATIVE_TARGET"] = str(self.cache_root)
         return subprocess.run(arguments, env=environment, cwd=self.root,
                               text=True, capture_output=True, timeout=15)
@@ -223,6 +229,27 @@ class ProviderNativeArtifactTests(NativeArtifactChecks, unittest.TestCase):
 
 class PoseidonNativeArtifactTests(NativeArtifactChecks, unittest.TestCase):
     kind = "poseidon"
+
+    def test_all_four_targets_keep_independent_verified_caches(self):
+        archives = {}
+        for platform, triples in (("linux", TRIPLES), ("darwin", DARWIN_TRIPLES)):
+            for architecture, triple in triples.items():
+                with self.subTest(platform=platform, architecture=architecture):
+                    self.assert_success(self.invoke(architecture, platform=platform))
+                    archive, marker = self.paths(architecture, platform)
+                    self.assertEqual(archive.read_bytes(), self.fixtures[(self.version, triple)].read_bytes())
+                    self.assertEqual(marker.read_text(), self.version + "\n")
+                    archives[archive] = archive.read_bytes()
+                    self.assert_success(self.invoke(architecture, platform=platform, NATIVE_TEST_FORBID_DOWNLOAD="1"))
+        self.assertEqual(len(archives), 4)
+        self.assertEqual(len(self.downloads()), 4)
+        for archive, original in archives.items():
+            self.assertEqual(archive.read_bytes(), original)
+
+    def test_unsupported_platform_fails_before_download(self):
+        result = self.invoke(platform="windows")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.downloads(), [])
 
 
 if __name__ == "__main__":

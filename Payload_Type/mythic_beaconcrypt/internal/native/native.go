@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	UpstreamCommit  = "b32af5768adae7e97240b660e1e9139b884bd056"
-	UpstreamVersion = "0.5.2"
+	UpstreamCommit  = "cd4801408cd230fd6fb63d189fb39cdca68c9f50"
+	UpstreamVersion = "0.6.0"
 )
 
 type Factory struct{}

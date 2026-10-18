@@ -5,35 +5,37 @@ import (
 	"errors"
 	"testing"
 
-	"capnproto.org/go/capnp/v3"
 	beaconcrypt "github.com/0xd6cb6d73/beaconcrypt"
 )
 
-func TestRegistrationPreflightAcceptsExistingStructureWithoutAuthenticating(t *testing.T) {
-	for _, segmented := range []bool{false, true} {
-		encoded := registrationFrame(t, segmented, 4)
-		if err := validateRegistration(encoded); err != nil {
-			t.Fatalf("segmented=%t: %v", segmented, err)
-		}
-		// Native read_message accepts the first unpacked frame. Preserve that
-		// behavior instead of imposing a different transport framing rule.
-		if err := validateRegistration(append(encoded, 255)); err != nil {
-			t.Fatalf("first-frame compatibility: %v", err)
-		}
+func TestRegistrationPreflightAcceptsCBORStructureWithoutAuthenticating(t *testing.T) {
+	encoded := registrationFrame(4)
+	if err := validateRegistration(encoded); err != nil {
+		t.Fatal(err)
 	}
-	// The fixture has zero signatures and synthetic public-key bytes. Passing
-	// this preflight grants no authenticity; native verification must still run.
+	// This fixture has zero signatures and synthetic public-key bytes. Passing
+	// preflight grants no authenticity; native verification must still run.
 }
 
 func TestRegistrationPreflightRejectsMalformedFields(t *testing.T) {
-	valid := registrationFrame(t, false, 4)
+	valid := registrationFrame(4)
 	inputs := map[string][]byte{
 		"AQ==":             {1},
 		"empty":            nil,
 		"truncated":        valid[:len(valid)-1],
-		"segment table":    bytes.Repeat([]byte{255}, 8),
-		"missing pointers": registrationFrame(t, false, 3),
-		"null root":        make([]byte, 8),
+		"invalid CBOR":     bytes.Repeat([]byte{255}, 8),
+		"missing field":    registrationFrame(3),
+		"old Cap'n Proto":  make([]byte, 8),
+		"trailing":         append(bytes.Clone(valid), 0),
+		"second message":   append(bytes.Clone(valid), valid...),
+		"wrong version":    append([]byte{0x86, 2}, valid[2:]...),
+		"wrong kind":       append([]byte{0x86, 1, 1}, valid[3:]...),
+		"wrong fields":     append([]byte{0x85}, valid[1:]...),
+		"indefinite array": append([]byte{0x9f}, valid[1:]...),
+		"nonminimal bytes": append([]byte{0x86, 1, 0, 0x59, 0, 33}, valid[5:]...),
+		"text field":       append([]byte{0x86, 1, 0, 0x78, 33}, valid[5:]...),
+		"indefinite bytes": append([]byte{0x86, 1, 0, 0x5f}, valid[5:]...),
+		"huge byte length": {0x86, 1, 0, 0x5b, 255, 255, 255, 255, 255, 255, 255, 255},
 	}
 	for field, name := range []string{"identity", "prekey", "one-time", "pqkey"} {
 		inputs[name+" length"] = changeRegistrationField(t, valid, field, func(value []byte) []byte { return value[:len(value)-1] })
@@ -85,6 +87,7 @@ func TestNativeMalformedRegistrationLeavesCheckpointUnchanged(t *testing.T) {
 	for name, invalid := range map[string][]byte{
 		"AQ==":         {1},
 		"truncated":    registration[:len(registration)-1],
+		"trailing":     append(bytes.Clone(registration), 0),
 		"bad identity": changeRegistrationField(t, registration, 0, func(value []byte) []byte { value[0] = 0; return value }),
 		"bad role":     changeRegistrationField(t, registration, 1, func(value []byte) []byte { value[65] = 0x81; return value }),
 		"short pqkey":  changeRegistrationField(t, registration, 3, func(value []byte) []byte { return value[:len(value)-1] }),
@@ -114,82 +117,38 @@ func FuzzRegistrationPreflight(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{1})
 	f.Add(bytes.Repeat([]byte{255}, 8))
+	f.Add(registrationFrame(4))
 	f.Fuzz(func(_ *testing.T, input []byte) {
 		_ = validateRegistration(input)
 	})
 }
 
-func registrationFrame(t *testing.T, segmented bool, pointers uint16) []byte {
-	t.Helper()
-	fields := [4][]byte{make([]byte, 33), make([]byte, 98), make([]byte, 98), make([]byte, 1249)}
-	fields[0][0], fields[1][64], fields[1][65], fields[2][64], fields[2][65], fields[3][64] = 1, 4, 0x80, 4, 0x81, 3
-	var message *capnp.Message
-	var segment *capnp.Segment
-	if segmented {
-		message, segment = capnp.NewMultiSegmentMessage(nil)
-		padding, err := capnp.NewData(segment, make([]byte, 8193))
-		if err != nil {
-			t.Fatal(err)
-		}
-		segment = padding.Segment()
-	} else {
-		message, segment = capnp.NewSingleSegmentMessage(nil)
-	}
-	defer message.Release()
-	root, err := capnp.NewRootStruct(segment, capnp.ObjectSize{PointerCount: pointers})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for index := uint16(0); index < pointers; index++ {
-		if err := root.SetData(index, fields[index]); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if segmented && message.NumSegments() < 2 {
-		t.Fatal("fixture did not exercise multiple segments")
-	}
-	encoded, err := message.Marshal()
-	if err != nil {
-		t.Fatal(err)
+func registrationFrame(fields int) []byte {
+	values := [4][]byte{make([]byte, 33), make([]byte, 98), make([]byte, 98), make([]byte, 1249)}
+	values[0][0], values[1][64], values[1][65], values[2][64], values[2][65], values[3][64] = 1, 4, 0x80, 4, 0x81, 3
+	encoded := []byte{0x86, 1, 0}
+	for _, value := range values[:fields] {
+		encoded = appendCBORArgument(encoded, 2, uint64(len(value)))
+		encoded = append(encoded, value...)
 	}
 	return encoded
 }
 
 func changeRegistrationField(t *testing.T, encoded []byte, field int, change func([]byte) []byte) []byte {
 	t.Helper()
-	message, err := capnp.Unmarshal(bytes.Clone(encoded))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer message.Release()
-	root, err := message.Root()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Decoded arenas are read-only. Rebuild the four public Data fields into a
-	// writable message instead of relying on input-buffer capacity for edits.
-	modified, segment := capnp.NewSingleSegmentMessage(nil)
-	defer modified.Release()
-	modifiedRoot, err := capnp.NewRootStruct(segment, capnp.ObjectSize{PointerCount: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
+	input := cborInput(encoded[3:])
+	result := bytes.Clone(encoded[:3])
 	for index := 0; index < 4; index++ {
-		pointer, err := root.Struct().Ptr(uint16(index))
-		if err != nil {
-			t.Fatal(err)
+		value, ok := input.byteString()
+		if !ok {
+			t.Fatal("malformed registration fixture")
 		}
-		data := bytes.Clone(pointer.Data())
+		value = bytes.Clone(value)
 		if index == field {
-			data = change(data)
+			value = change(value)
 		}
-		if err := modifiedRoot.SetData(uint16(index), data); err != nil {
-			t.Fatal(err)
-		}
-	}
-	result, err := modified.Marshal()
-	if err != nil {
-		t.Fatal(err)
+		result = appendCBORArgument(result, 2, uint64(len(value)))
+		result = append(result, value...)
 	}
 	return result
 }

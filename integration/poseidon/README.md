@@ -47,8 +47,7 @@ staged module. A version-matching archive from the external checkout's ignored
 The real release downloader then verifies the pinned SHA-256 and downloads or
 replaces the private candidate when needed. The external checkout and its cache
 remain read-only. The private cache is removed on exit. No production module file
-is changed, and neither native source compilation nor Rust or Cap'n Proto build
-tools are required.
+is changed, and no Rust toolchain or native source compilation is required.
 
 The test checks that the real payload service registers its `beaconcrypt`
 supported-crypto-scheme declaration alongside its commands and build parameters.

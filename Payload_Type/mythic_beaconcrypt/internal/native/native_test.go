@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"capnproto.org/go/capnp/v3"
 	beaconcrypt "github.com/0xd6cb6d73/beaconcrypt"
 	"github.com/0xd6cb6d73/mythic-beaconcrypt/internal/engine"
 )
@@ -104,7 +103,7 @@ func TestNativeSenderPrecheckPreservesOtherSession(t *testing.T) {
 	if firstKeyID == secondKeyID {
 		t.Fatal("registration reused key ID")
 	}
-	// Exercise native multi-segment output as well as the Go-generated parser
+	// Exercise a large native CBOR frame as well as the Go-generated parser
 	// fixtures. This packet must remain usable after a wrong-route admission.
 	plaintext := bytes.Repeat([]byte{0, 255, 128, 1}, 16384)
 	ciphertext, err := second.EncryptToServer(plaintext)
@@ -165,20 +164,12 @@ func exportServer(t *testing.T, server engine.Native) []byte {
 
 func corruptFrame(t *testing.T, ciphertext []byte) []byte {
 	t.Helper()
-	corrupted := append([]byte(nil), ciphertext...)
-	message, err := capnp.Unmarshal(corrupted)
-	if err != nil {
-		t.Fatal(err)
+	if len(ciphertext) == 0 {
+		t.Fatal("cannot corrupt empty ciphertext")
 	}
-	defer message.Release()
-	root, err := message.Root()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pointer, err := root.Struct().Ptr(0)
-	if err != nil || len(pointer.Data()) == 0 {
-		t.Fatalf("read native ciphertext: %v", err)
-	}
-	pointer.Data()[0] ^= 1
+	corrupted := bytes.Clone(ciphertext)
+	// The final byte belongs to the opaque commitment byte string. Corrupting
+	// it preserves CBOR framing while forcing native authentication to reject.
+	corrupted[len(corrupted)-1] ^= 1
 	return corrupted
 }
