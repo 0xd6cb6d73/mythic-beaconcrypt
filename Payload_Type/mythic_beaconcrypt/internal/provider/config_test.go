@@ -87,7 +87,7 @@ func TestLoadConfigOwnsBeaconcryptMetadataAndLimits(t *testing.T) {
 	if config.Service.Name != "custom-beaconcrypt" || config.Service.RPCTimeout != 3*time.Second || config.Service.Version != Version || config.Service.Description != "Beaconcrypt cryptographic provider" || config.Engine.ServerKID != ^uint64(0) || config.Engine.Namespace != "custom_namespace" || config.Engine.StateID != "custom/state" || config.Engine.MaxMessageBytes != 8192 || config.Engine.MaxProfiles != 101 || config.Engine.MaxSessions != 102 || config.Engine.MaxRequests != 103 || config.Engine.ResultRetentionSeconds != 3600 {
 		t.Fatalf("Beaconcrypt configuration changed: %#v", config)
 	}
-	expected := wire.Capabilities{APIVersion: wire.APIVersion, Schemes: []string{"beaconcrypt"}, Establishment: "single_round", SessionPersistence: "durable", MaxMessageBytes: config.Engine.MaxMessageBytes, ResultRetentionSeconds: config.Engine.ResultRetentionSeconds}
+	expected := wire.Capabilities{APIVersion: wire.APIVersion, Schemes: []string{"beaconcrypt", "Native", "WASM"}, Establishment: "single_round", SessionPersistence: "durable", MaxMessageBytes: config.Engine.MaxMessageBytes, ResultRetentionSeconds: config.Engine.ResultRetentionSeconds}
 	if !reflect.DeepEqual(config.Service.Capabilities, expected) {
 		t.Fatalf("runtime capabilities differ from protocol configuration: %#v", config.Service.Capabilities)
 	}

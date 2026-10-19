@@ -67,7 +67,7 @@ func LoadConfig() (Config, error) {
 	}
 	config.Service.Description = "Beaconcrypt cryptographic provider"
 	config.Service.Version = Version
-	config.Service.Capabilities = wire.Capabilities{APIVersion: wire.APIVersion, Schemes: []string{engine.Scheme}, Establishment: "single_round", SessionPersistence: "durable", MaxMessageBytes: config.Engine.MaxMessageBytes, ResultRetentionSeconds: config.Engine.ResultRetentionSeconds}
+	config.Service.Capabilities = wire.Capabilities{APIVersion: wire.APIVersion, Schemes: engine.SupportedSchemes(), Establishment: "single_round", SessionPersistence: "durable", MaxMessageBytes: config.Engine.MaxMessageBytes, ResultRetentionSeconds: config.Engine.ResultRetentionSeconds}
 	return config, nil
 }
 

@@ -214,7 +214,14 @@ The image contains an empty `.env` beside its binary because SDK initialization 
 
 The service needs one active replica per registered provider. It binds exclusive AMQP consumers before accepting campaign requests, so a duplicate process cannot displace campaign owners during startup. Broker loss or an uncertain SDK transport timeout ends the process; the Compose restart policy starts a fresh worker, which restores campaigns lazily as requests arrive. SDK retries can repeat an identical storage request after an uncertain publish; durable request digests and operation results provide reconciliation.
 
-Select `provider:beaconcrypt:beaconcrypt` in a Mythic crypto parameter. A custom `BEACONCRYPT_PROVIDER_NAME` changes the middle component and must match the registered consuming-service name. Payload builders and agents must support this qualified provider selection.
+Select `provider:beaconcrypt:Native` or `provider:beaconcrypt:WASM` in a Mythic
+crypto parameter to choose the agent's native or embedded WASM backend. The
+worker advertises both names and retains `provider:beaconcrypt:beaconcrypt` for
+existing profiles and callbacks. All three names use the same server engine,
+campaign identity, durable state and Beaconcrypt wire protocol; the worker does
+not switch its own execution backend. A retry must retain the original scheme
+name because the exact request, including that name, is part of its immutable
+idempotency digest. A custom `BEACONCRYPT_PROVIDER_NAME` changes the middle component and must match the registered consuming-service name. Payload builders and agents must support this qualified provider selection.
 
 ## Existing agent protocol
 
