@@ -1,12 +1,16 @@
 # Deploying Poseidon with Beaconcrypt
 
-These instructions apply to the external Poseidon `crypto-shim` checkout used
-with this provider.
+These instructions apply to the external Poseidon `feature/beaconcrypt-wazero`
+checkout with this provider's `feature/beaconcrypt-backend-choices` branch. The
+Mythic server still uses its `crypto-shim` branch; that server branch is separate
+from the Poseidon client backend feature.
 
-The Poseidon branch targets Mythic 4.0 beta with the generic crypto provider
+The Poseidon integration targets Mythic 4.0 beta with the generic crypto provider
 extension from Mythic's `crypto-shim` branch. It adds an opt-in Beaconcrypt client to
 Poseidon; the existing AES builds keep their normal configuration.
-The Beaconcrypt client and native library are pinned to v0.6.0. Upgrade the provider and agents together; v0.5.2 wire messages are incompatible with the new CBOR encoding.
+The Beaconcrypt protocol is pinned to v0.6.0 for both client backends. Upgrade
+the provider and agents together; v0.5.2 wire messages are incompatible with the
+new CBOR encoding.
 
 Install the Poseidon checkout being tested and enable its local build context.
 This exercises that source rather than a published image. From your Mythic
@@ -41,11 +45,16 @@ or targets rather than compiling a replacement. A Rust toolchain is not required
 
 Run the separate `mythic-beaconcrypt` provider with the matching
 Mythic service credential before creating a payload. In the HTTP or TCP C2 profile's
-`AESPSK` crypto parameter, choose **beaconcrypt (beaconcrypt)** under
-**Encryption Type** in the normal payload creation wizard. Mythic discovers
+`AESPSK` crypto parameter, choose **Native** or **WASM** from the Beaconcrypt
+provider under **Encryption Type** in the normal payload creation wizard. Mythic discovers
 compatible registered providers using Poseidon's `supported_crypto_schemes`
-declaration. That choice is serialized as `provider:beaconcrypt:beaconcrypt`;
-a different registered service name changes the middle component.
+declaration. Those choices are serialized as `provider:beaconcrypt:Native` and
+`provider:beaconcrypt:WASM`; a different registered service name changes the
+middle component. The choice selects the client backend directly, without a
+separate payload build parameter. The provider retains the legacy `beaconcrypt`
+scheme for existing profiles and callbacks; newly built profiles use `Native`
+or `WASM`. All three names share the server engine, wire protocol and campaign
+identity.
 Mythic prepares the profile and supplies `provider_config` to the payload
 builder; server keys are not manual Poseidon build parameters. The first profile
 build in a Mythic campaign creates that campaign's native server identity and
@@ -61,26 +70,40 @@ adapter can be removed once the SDK exposes the declaration directly.
 Poseidon's Beaconcrypt build integration supports Linux and macOS `AMD_x64` and `ARM_x64`
 executables (`mode=default`) with exactly one direct `http` profile or one P2P
 `tcp` profile. Disable `static` and `garble`. The payload container must provide
-the matching target compiler and native archive. Other targets, transports, and
-multiple C2 profiles are rejected by this integration; these restrictions do not
+the matching target compiler for its CGO dependencies. The Native choice also
+requires the native archive; WASM uses a complete Beaconcrypt Go/WASM bundle
+configured in the builder with its verified SHA256. See the Poseidon checkout's
+README for bundle configuration and release availability. Other targets,
+transports, and multiple C2 profiles are rejected by this integration; these restrictions do not
 apply to legacy AES builds.
 
-The v0.6.0 macOS archives require macOS 15.5 or newer on Intel and macOS 26.5 or newer on ARM64, based on their native object deployment targets. The builder uses the existing osxcross compilers and sets those deployment targets. For Beaconcrypt macOS builds, it stages a private copy of the pinned Go module with the selected archive and uses an alternate module file, satisfying the binding's hardcoded Darwin archive path without modifying the shared module cache. These release-archive requirements apply to Beaconcrypt builds.
+The v0.6.0 macOS archives require macOS 15.5 or newer on Intel and macOS 26.5 or
+newer on ARM64, based on their native object deployment targets. The builder uses
+the existing osxcross compilers and sets those deployment targets. For Native
+macOS builds, it stages a private copy of the pinned Go module with the selected
+archive and uses an alternate module file, satisfying the binding's hardcoded
+Darwin archive path without modifying the shared module cache. These release
+archive deployment requirements apply to the Native choice. WASM
+removes the native archive's deployment minimum, while the Go toolchain, wazero
+and Poseidon's other libraries still determine supported macOS versions. Older
+macOS runtime behavior must be tested separately.
 
 TCP agents use ordinary `link_tcp` routing through an HTTP egress callback.
 AESPSK and Beaconcrypt can be selected independently for the HTTP egress and
 each TCP agent.
 
 The builder preserves the provider's configuration bytes and includes the
-`beaconcrypt` build tag. At runtime Poseidon performs Beaconcrypt registration,
-then encrypts its normal Mythic check-in and messages through that session.
-Mythic owns the server-side durable checkpoint. The agent's native session lives
-in memory; restarting the agent creates a fresh registration.
+`beaconcrypt` build tag; WASM additionally selects `beaconcrypt_wazero` while
+keeping CGO enabled for other agent dependencies. At runtime Poseidon performs
+Beaconcrypt registration, then encrypts its normal Mythic check-in and messages through that session.
+Mythic owns the server-side durable checkpoint. The agent's session lives
+in memory under either client backend; restarting it creates a fresh registration.
 
 Run the [isolated acceptance suite](README.md) for payload build, task, retry and
 provider restart coverage. The [installed-stack suite](installed/README.md) uses
 real C2 profiles and covers HTTP concurrency plus all nine none/AESPSK/Beaconcrypt
 HTTP-egress and TCP-P2P combinations, with optional mixed-encryption TCP siblings.
-Its egress and child architecture flags exercise any Linux amd64/ARM64 pairing;
+Its backend flags select Native or WASM globally or independently for the egress
+and children. Its architecture flags exercise any Linux amd64/ARM64 pairing;
 ARM64 agents on amd64 run through an explicitly selected QEMU user emulator and
 sysroot, without global binfmt changes.
