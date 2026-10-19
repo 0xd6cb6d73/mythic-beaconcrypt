@@ -168,6 +168,11 @@ backend choices.
 
 By default each cell starts one real HTTP egress agent and three real TCP P2P
 agents. Every process has a distinct working directory, including the egress.
+Before sending `link_tcp`, the suite checks Linux procfs for a TCP `LISTEN`
+socket owned by that exact child process, including QEMU when used. A port left
+in `TIME_WAIT`, a socket owned by another process, or a child that has only bound
+the port does not count as ready. The probe makes no connection, preserving the
+relay's first connection while allowing slower WASM initialization to finish.
 The real `link_tcp` task connects the relay to each loopback child listener.
 The test checks each callback's payload, PID, architecture, selected cryptography
 and loaded commands, and verifies active TCP graph edges between every child
@@ -196,7 +201,8 @@ directory during installation.
 
 The offline tests check crypto/architecture selection, ELF validation, explicit
 emulator commands and matrix coverage, and verify that the oracle rejects routing
-mixups. Backend tests check exact advertised aliases, both role overrides,
+mixups. Listener regressions reproduce the real `TIME_WAIT` false positive and verify
+socket ownership and `LISTEN` state. Backend tests check exact advertised aliases, both role overrides,
 callback selection and rejection of hidden backend build parameters. The
 integration itself always uses real agents and the real server:
 

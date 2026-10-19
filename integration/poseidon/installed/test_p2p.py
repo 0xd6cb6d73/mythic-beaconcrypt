@@ -6,7 +6,6 @@ import base64
 import concurrent.futures
 import contextlib
 import datetime
-import errno
 import hashlib
 import json
 import os
@@ -168,13 +167,27 @@ def listening(process, port):
     if process.poll() is not None:
         raise RuntimeError("TCP child exited before its listener started")
     # Do not connect as a readiness probe: the relay must own the first connection.
+    # A failed bind also matches TIME_WAIT and another process's socket. Require
+    # a LISTEN inode held by this exact agent (or its QEMU process) instead.
+    proc = Path("/proc") / str(process.pid)
+    inodes = set()
     try:
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", port))
-    except OSError as error:
-        if error.errno == errno.EADDRINUSE:
-            return True
-        raise
+        for descriptor in (proc / "fd").iterdir():
+            try:
+                target = os.readlink(descriptor)
+            except FileNotFoundError:
+                continue
+            if target.startswith("socket:[") and target.endswith("]"):
+                inodes.add(target[8:-1])
+        for protocol in ("tcp", "tcp6"):
+            for line in (proc / "net" / protocol).read_text().splitlines()[1:]:
+                fields = line.split()
+                if len(fields) >= 10 and fields[3] == "0A" and fields[9] in inodes:
+                    if int(fields[1].rsplit(":", 1)[1], 16) == port:
+                        return True
+    except FileNotFoundError:
+        if process.poll() is not None:
+            raise RuntimeError("TCP child exited before its listener started") from None
     return None
 
 
