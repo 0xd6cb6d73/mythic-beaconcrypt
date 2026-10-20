@@ -22,9 +22,10 @@ const (
 	Scheme       = "beaconcrypt"
 	SchemeNative = "Native"
 	SchemeWASM   = "WASM"
-	// Completed messages are base64 encoded inside the durable JSON result.
-	// Keep ample room below the 16 MiB result limit for framing and metadata.
-	MaxProviderMessageBytes = 8 << 20
+	// MaxProviderMessageBytes matches Beaconcrypt's complete encoded-frame bound.
+	// Plaintext must also leave room for the protocol's authentication and CBOR
+	// framing; the native library enforces that bound before mutating a ratchet.
+	MaxProviderMessageBytes = 32 << 20
 )
 
 type profile struct {
@@ -97,7 +98,7 @@ func New(config Config, factory Factory, store Store) (*Engine, error) {
 		config.MaxRequests = 5000
 	}
 	if config.MaxMessageBytes == 0 {
-		config.MaxMessageBytes = 1 << 20
+		config.MaxMessageBytes = MaxProviderMessageBytes
 	}
 	if config.ResultRetentionSeconds == 0 {
 		config.ResultRetentionSeconds = 86400

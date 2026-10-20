@@ -271,9 +271,10 @@ These are logical task and response sizes, not a promise that each value is one
 wire frame. Poseidon normally splits user output into 512,000-byte chunks, and
 HTTP polling and P2P delegation can aggregate multiple chunks or agents into a
 larger envelope. The tests do not change chunking, profile containers, or message
-limits. The provider currently advertises a 1 MiB default and permits at most
-8 MiB via `BEACONCRYPT_MAX_MESSAGE_BYTES`; other library and transport bounds
-also apply. A 1 MiB value already exceeds the default once wrapped, and 10 MiB
-can exceed several bounds. Those failures remain failures in the report; they
-are not silently skipped or treated as successful delivery. Use fresh test
+limits. The provider defaults to Beaconcrypt's inclusive 32 MiB complete encoded-frame
+limit; `BEACONCRYPT_MAX_MESSAGE_BYTES` may lower that admission limit. Task JSON,
+P2P delegation, authentication, CBOR framing, and base64 can make a logical
+value substantially larger on the wire. Other transport bounds also apply. Any
+limit failures remain failures in the report; they are not silently skipped or
+treated as successful delivery. Use fresh test
 campaigns, retain evidence, and revoke temporary bot tokens after the run.

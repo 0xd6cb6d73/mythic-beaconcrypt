@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	beaconcrypt "github.com/0xd6cb6d73/beaconcrypt"
+	"github.com/0xd6cb6d73/mythic-beaconcrypt/internal/engine"
 )
 
 func TestSenderKeyIDSupportsDeterministicCBORWidths(t *testing.T) {
@@ -58,6 +59,9 @@ func TestSenderKeyIDRejectsMalformedAndConcatenatedFrames(t *testing.T) {
 }
 
 func TestSenderKeyIDHonorsCompleteNativeWireLimit(t *testing.T) {
+	if engine.MaxProviderMessageBytes != beaconcrypt.MaxMessageSize {
+		t.Fatal("provider message limit differs from the pinned Beaconcrypt binding")
+	}
 	// Prefix, two single-byte integers, and a five-byte byte-string header.
 	encoded := makeFrame(1, 7, beaconcrypt.MaxMessageSize-10)
 	if len(encoded) != beaconcrypt.MaxMessageSize {

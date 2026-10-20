@@ -38,7 +38,7 @@ func LoadConfig() (Config, error) {
 	limits["BEACONCRYPT_MAX_MESSAGE_BYTES"] = struct {
 		fallback int
 		target   *int
-	}{1 << 20, &config.Engine.MaxMessageBytes}
+	}{engine.MaxProviderMessageBytes, &config.Engine.MaxMessageBytes}
 	limits["BEACONCRYPT_MAX_PROFILES"] = struct {
 		fallback int
 		target   *int
@@ -63,7 +63,7 @@ func LoadConfig() (Config, error) {
 		*limit.target = value
 	}
 	if config.Engine.MaxMessageBytes > engine.MaxProviderMessageBytes {
-		return Config{}, errors.New("BEACONCRYPT_MAX_MESSAGE_BYTES must not exceed 8 MiB")
+		return Config{}, errors.New("BEACONCRYPT_MAX_MESSAGE_BYTES must not exceed 32 MiB")
 	}
 	config.Service.Description = "Beaconcrypt cryptographic provider"
 	config.Service.Version = Version

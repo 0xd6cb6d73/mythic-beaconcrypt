@@ -294,6 +294,9 @@ func (e *Engine) perform(ctx context.Context, request wire.Request) (wire.Respon
 		if update.KeyID != s.KeyID {
 			return failure(request, "identity_mismatch", "native recipient differs from the routed session", "unresolved"), true, true
 		}
+		if len(update.Data) > MaxProviderMessageBytes {
+			return failure(request, "native_failure", "native send exceeded the complete frame limit", "unresolved"), true, true
+		}
 		response.Message = update.Data
 	case wire.RevokeSession:
 		s := e.data.Sessions[request.SessionRef]

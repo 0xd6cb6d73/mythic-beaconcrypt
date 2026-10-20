@@ -824,17 +824,17 @@ func TestReadOnlyQueriesDoNotConsumeAdmissionOrFreezeUnknownResult(t *testing.T)
 	}
 }
 
-func TestProviderMessageLimitReservesDurableResultEncoding(t *testing.T) {
+func TestProviderMessageLimitMatchesCompleteFrameBudget(t *testing.T) {
 	if _, err := New(Config{MaxMessageBytes: MaxProviderMessageBytes + 1}, &fakeFactory{}, newMemoryStore()); err == nil {
-		t.Fatal("accepted a message limit above the safe durable JSON budget")
+		t.Fatal("accepted a message limit above the complete Beaconcrypt frame budget")
 	}
 	e, err := New(Config{MaxMessageBytes: MaxProviderMessageBytes}, &fakeFactory{}, newMemoryStore())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer e.Close()
-	if e.Capabilities().MaxMessageBytes != 8<<20 {
-		t.Fatal("safe message limit was not advertised")
+	if e.Capabilities().MaxMessageBytes != 32<<20 {
+		t.Fatal("complete frame limit was not advertised")
 	}
 }
 

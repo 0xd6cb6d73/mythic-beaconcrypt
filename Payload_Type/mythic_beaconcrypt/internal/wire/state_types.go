@@ -23,7 +23,8 @@ const (
 	MaxRequestIDBytes    = 128
 	MaxStateBlobBytes    = 16 << 20
 	MaxProviderJSONBytes = 1 << 20
-	MaxResultBytes       = 16 << 20
+	// Results include base64-encoded message bytes and the provider reply JSON.
+	MaxResultBytes = 64 << 20
 )
 
 // StateKey identifies one provider-owned state object. The authenticated provider

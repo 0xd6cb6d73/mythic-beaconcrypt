@@ -23,7 +23,7 @@ func TestLoadConfigCampaignDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Service.Name != "beaconcrypt" || config.Service.RPCTimeout != 20*time.Second || config.Engine.Initialize || config.Engine.Namespace != "beaconcrypt" || config.Engine.StateID != "server" || config.Engine.MaxMessageBytes != 1<<20 || config.Engine.MaxProfiles != 1000 || config.Engine.MaxSessions != 1000 || config.Engine.MaxRequests != 5000 || config.Engine.ResultRetentionSeconds != 86400 {
+	if config.Service.Name != "beaconcrypt" || config.Service.RPCTimeout != 20*time.Second || config.Engine.Initialize || config.Engine.Namespace != "beaconcrypt" || config.Engine.StateID != "server" || config.Engine.MaxMessageBytes != 32<<20 || config.Engine.MaxProfiles != 1000 || config.Engine.MaxSessions != 1000 || config.Engine.MaxRequests != 5000 || config.Engine.ResultRetentionSeconds != 86400 {
 		t.Fatalf("unexpected defaults: %#v", config)
 	}
 }
@@ -52,7 +52,7 @@ func TestLoadConfigEscapesBrokerCredentialsAndVirtualHost(t *testing.T) {
 
 func TestLoadConfigRejectsInvalidInputWithoutDisclosingSecrets(t *testing.T) {
 	for _, test := range []struct{ name, value string }{
-		{"BEACONCRYPT_MAX_MESSAGE_BYTES", "8388609"},
+		{"BEACONCRYPT_MAX_MESSAGE_BYTES", "33554433"},
 		{"RABBITMQ_URL", "amqps://user:secret@example.test"},
 		{"BEACONCRYPT_PROVIDER_NAME", "bad:name"}, {"BEACONCRYPT_PROVIDER_NAME", "bad name"}, {"RABBITMQ_URL", "https://user:secret@example.test"}, {"RABBITMQ_URL", "amqp:///missing-host"}, {"BEACONCRYPT_RPC_TIMEOUT", "999ms"}, {"BEACONCRYPT_RPC_TIMEOUT", "31s"}, {"BEACONCRYPT_RPC_TIMEOUT", "6m"}, {"BEACONCRYPT_RPC_TIMEOUT", "invalid"}, {"BEACONCRYPT_SERVER_KID", "-1"}, {"BEACONCRYPT_SERVER_KID", "18446744073709551616"}, {"BEACONCRYPT_MAX_MESSAGE_BYTES", "0"}, {"BEACONCRYPT_MAX_PROFILES", "-1"}, {"BEACONCRYPT_MAX_SESSIONS", "invalid"}, {"BEACONCRYPT_MAX_REQUESTS", "0"}, {"BEACONCRYPT_RESULT_RETENTION_SECONDS", "-1"},
 	} {
@@ -90,5 +90,17 @@ func TestLoadConfigOwnsBeaconcryptMetadataAndLimits(t *testing.T) {
 	expected := wire.Capabilities{APIVersion: wire.APIVersion, Schemes: []string{"beaconcrypt", "Native", "WASM"}, Establishment: "single_round", SessionPersistence: "durable", MaxMessageBytes: config.Engine.MaxMessageBytes, ResultRetentionSeconds: config.Engine.ResultRetentionSeconds}
 	if !reflect.DeepEqual(config.Service.Capabilities, expected) {
 		t.Fatalf("runtime capabilities differ from protocol configuration: %#v", config.Service.Capabilities)
+	}
+}
+
+func TestLoadConfigAcceptsCompleteFrameBoundary(t *testing.T) {
+	configEnvironment(t)
+	t.Setenv("BEACONCRYPT_MAX_MESSAGE_BYTES", "33554432")
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Engine.MaxMessageBytes != 32<<20 || config.Service.Capabilities.MaxMessageBytes != 32<<20 {
+		t.Fatal("complete frame boundary was not accepted and advertised")
 	}
 }
