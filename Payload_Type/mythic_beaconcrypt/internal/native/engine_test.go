@@ -302,6 +302,11 @@ func requireIntegrationReply(t *testing.T, request wire.Request, reply wire.Resp
 
 func beginIntegrationSession(t *testing.T, owner *engine.Engine, profile wire.Response, serverKID uint64, publicKey []byte) (*beaconcrypt.Beacon, wire.Response) {
 	t.Helper()
+	return beginIntegrationSessionWithScheme(t, owner, profile, serverKID, publicKey, engine.Scheme)
+}
+
+func beginIntegrationSessionWithScheme(t *testing.T, owner *engine.Engine, profile wire.Response, serverKID uint64, publicKey []byte, scheme string) (*beaconcrypt.Beacon, wire.Response) {
+	t.Helper()
 	client, err := beaconcrypt.NewBeacon(serverKID, publicKey)
 	if err != nil {
 		t.Fatal(err)
@@ -317,6 +322,7 @@ func beginIntegrationSession(t *testing.T, owner *engine.Engine, profile wire.Re
 		t.Fatal(err)
 	}
 	request := integrationRequest(wire.BeginSession)
+	request.Scheme = scheme
 	request.ProfileRef, request.PayloadUUID, request.NextUUID, request.Message = profile.ProfileRef, uuid.NewString(), uuid.NewString(), message
 	response := owner.Handle(context.Background(), request)
 	requireIntegrationReply(t, request, response)
@@ -438,4 +444,57 @@ func (s *integrationStore) LookupResult(_ context.Context, req wire.LookupResult
 func cloneIntegrationState(state wire.StoredState) wire.StoredState {
 	state.StateBlob, state.ProviderJSON = bytes.Clone(state.StateBlob), bytes.Clone(state.ProviderJSON)
 	return state
+}
+
+func TestEngineNativeBackendAliasesUseTheSameProtocolAndIdentity(t *testing.T) {
+	ctx := context.Background()
+	store := &integrationStore{results: map[string]wire.OperationResult{}}
+	owner := newIntegrationEngine(t, store, true)
+	var identity []byte
+	for _, scheme := range []string{engine.Scheme, engine.SchemeNative, engine.SchemeWASM} {
+		t.Run(scheme, func(t *testing.T) {
+			prepare := integrationRequest(wire.PrepareProfile)
+			prepare.Scheme = scheme
+			profile := owner.Handle(ctx, prepare)
+			requireIntegrationReply(t, prepare, profile)
+			if identity == nil {
+				identity = bytes.Clone(profile.AgentConfig)
+			}
+			if !bytes.Equal(identity, profile.AgentConfig) {
+				t.Fatal("alias changed the server identity")
+			}
+			var material struct {
+				ServerKID       string `json:"server_kid"`
+				ServerPublicKey []byte `json:"server_public_key"`
+			}
+			if err := json.Unmarshal(profile.AgentConfig, &material); err != nil {
+				t.Fatal(err)
+			}
+			serverKID, err := strconv.ParseUint(material.ServerKID, 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, session := beginIntegrationSessionWithScheme(t, owner, profile, serverKID, material.ServerPublicKey, scheme)
+			plaintext := []byte("same Beaconcrypt wire protocol for " + scheme)
+			ciphertext, err := client.EncryptToServer(plaintext)
+			if err != nil {
+				t.Fatal(err)
+			}
+			open := integrationSessionRequest(wire.Open, profile, session)
+			open.Scheme, open.Message = scheme, ciphertext
+			opened := owner.Handle(ctx, open)
+			requireIntegrationReply(t, open, opened)
+			if !bytes.Equal(opened.Message, plaintext) {
+				t.Fatal("alias could not open client ciphertext")
+			}
+			seal := integrationSessionRequest(wire.Seal, profile, session)
+			seal.Scheme, seal.Message = scheme, plaintext
+			sealed := owner.Handle(ctx, seal)
+			requireIntegrationReply(t, seal, sealed)
+			recovered, err := client.DecryptServerMessage(sealed.Message)
+			if err != nil || !bytes.Equal(recovered, plaintext) {
+				t.Fatalf("alias could not decrypt sealed response: %v", err)
+			}
+		})
+	}
 }

@@ -84,11 +84,29 @@ def write_report(path, report):
     path.write_text(json.dumps(report, indent=2) + "\n")
 
 
-def run_case(client, binary, payload_id, work, agent_count, message_count):
+def beaconcrypt_alias(backend):
+    try:
+        return {"native": "Native", "wasm": "WASM"}[backend]
+    except KeyError:
+        raise ValueError("Beaconcrypt backend must be native or wasm") from None
+
+
+def beaconcrypt_selection(backend):
+    return "provider:beaconcrypt:" + beaconcrypt_alias(backend)
+
+
+def advertised_build_parameters(parameters):
+    if "beaconcrypt_backend" in parameters:
+        raise ValueError("Advertised crypto choices must select the backend without a build parameter")
+    return [{"name": name, "value": value} for name, value in parameters.items()]
+
+
+def run_case(client, binary, payload_id, work, agent_count, message_count, backend):
     """Start fresh agents, submit concurrent rounds, and stop only these agents."""
     work.mkdir()
     processes, logs, callbacks, tasks = [], [], [], []
     report = {"status": "fail", "agents": agent_count, "messages_per_agent": message_count,
+              "beaconcrypt_backend": backend, "beaconcrypt_alias": beaconcrypt_alias(backend),
               "callbacks": callbacks, "pwd_tasks": tasks}
 
     def require_live_agents():
@@ -150,8 +168,8 @@ def run_case(client, binary, payload_id, work, agent_count, message_count):
                 callback = by_pid.get(process.pid)
                 if not callback or callback["cwd"] != str(work / f"agent-{index + 1}"):
                     raise RuntimeError("Callback PID or directory does not match its real agent process")
-                if callback["crypto_type"] != "beaconcrypt":
-                    raise RuntimeError("Callback is not managed by Beaconcrypt")
+                if callback["crypto_type"] != beaconcrypt_alias(backend):
+                    raise RuntimeError("Callback does not use the selected Beaconcrypt alias")
                 # Callback creation commits before its loaded commands are copied.
                 if {loaded["command"]["cmd"] for loaded in callback["loadedcommands"]} != {"pwd", "exit"}:
                     return None
@@ -211,6 +229,7 @@ def main():
     parser.add_argument("--agents", type=int, choices=range(1, 4), default=3)
     parser.add_argument("--messages", type=int, choices=range(1, 4), default=3)
     parser.add_argument("--matrix", action="store_true", help="Run all nine combinations of 1–3 agents and 1–3 messages, overriding --agents/--messages")
+    parser.add_argument("--beaconcrypt-backend", choices=("native", "wasm"), default="native")
     parser.add_argument("--work-dir", help="Fresh directory for reports, downloaded ELF, and agent logs")
     parser.add_argument("--insecure", action="store_true", help="Accept the local instance's self-signed HTTPS certificate")
     args = parser.parse_args()
@@ -224,7 +243,9 @@ def main():
         parser.error("work-dir must be empty")
     print("Evidence directory: " + str(work), flush=True)
     report = {"status": "fail", "mythic": args.url,
-              "callback": f"http://127.0.0.1:{args.callback_port}", "cases": []}
+              "callback": f"http://127.0.0.1:{args.callback_port}",
+              "beaconcrypt_backend": args.beaconcrypt_backend,
+              "beaconcrypt_alias": beaconcrypt_alias(args.beaconcrypt_backend), "cases": []}
     try:
         client = Mythic(args.url, args.insecure)
         if args.api_token_file:
@@ -261,10 +282,10 @@ def main():
             "payload_type": "poseidon", "selected_os": "Linux", "filename": "poseidon-beaconcrypt-installed",
             "description": "Installed HTTP C2 / Poseidon / Beaconcrypt end-to-end test",
             "commands": ["pwd", "exit"],
-            "build_parameters": [{"name": name, "value": value} for name, value in {
+            "build_parameters": advertised_build_parameters({
                 "architecture": "AMD_x64", "mode": "default", "garble": False, "debug": False,
                 "static": False, "proxy_bypass": True, "egress_order": ["http"],
-                "egress_failover": "failover", "failover_threshold": 10}.items()],
+                "egress_failover": "failover", "failover_threshold": 10}),
             "c2_profiles": [{"c2_profile": "http", "c2_profile_parameters": {
                 "callback_host": "http://127.0.0.1", "callback_port": args.callback_port,
                 "callback_interval": 1, "callback_jitter": 0,
@@ -272,7 +293,7 @@ def main():
                 "get_uri": "index", "post_uri": "data", "query_path_name": "q",
                 "headers": {"User-Agent": "Poseidon installed integration test"},
                 "proxy_host": "", "proxy_port": "", "proxy_user": "", "proxy_pass": "",
-                "encrypted_exchange_check": False, "AESPSK": "provider:beaconcrypt:beaconcrypt"}}],
+                "encrypted_exchange_check": False, "AESPSK": beaconcrypt_selection(args.beaconcrypt_backend)}}],
         }
         write_report(work / "payload-config.json", configuration)
         build = client.request("/createpayload_webhook", {"input": {
@@ -304,7 +325,7 @@ def main():
 
         cells = [(agents, messages) for agents in range(1, 4) for messages in range(1, 4)] if args.matrix else [(args.agents, args.messages)]
         for agents, messages in cells:
-            case = run_case(client, binary, payload["id"], work / f"agents-{agents}_messages-{messages}", agents, messages)
+            case = run_case(client, binary, payload["id"], work / f"agents-{agents}_messages-{messages}", agents, messages, args.beaconcrypt_backend)
             report["cases"].append(case)
             all_callbacks = [callback for result in report["cases"] for callback in result["callbacks"]]
             if len({callback["agent_callback_id"] for callback in all_callbacks}) != len(all_callbacks):

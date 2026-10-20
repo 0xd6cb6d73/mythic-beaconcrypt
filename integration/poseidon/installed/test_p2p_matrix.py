@@ -15,7 +15,7 @@ class EncryptionMatrixTests(unittest.TestCase):
         self.assertEqual(CRYPTO_SELECTIONS, {
             "none": "none",
             "aes256_hmac": "aes256_hmac",
-            "beaconcrypt": "provider:beaconcrypt:beaconcrypt",
+            "beaconcrypt": "provider:beaconcrypt:Native",
         })
         for mode, selection in CRYPTO_SELECTIONS.items():
             with self.subTest(mode=mode):

@@ -43,7 +43,7 @@ func (e *Engine) Handle(ctx context.Context, request wire.Request) wire.Response
 	if len(request.Message) > e.config.MaxMessageBytes {
 		return failure(request, "invalid_input", "provider message exceeds configured limit", "rejected")
 	}
-	if request.Scheme != "" && request.Scheme != Scheme {
+	if request.Scheme != "" && !isBeaconcryptScheme(request.Scheme) {
 		return failure(request, "invalid_input", "unsupported cryptographic scheme", "rejected")
 	}
 	if e.campaignID != 0 && request.OperationScopeID != e.campaignID {
@@ -248,8 +248,8 @@ func (e *Engine) perform(ctx context.Context, request wire.Request) (wire.Respon
 	case wire.Describe:
 		response.ProviderJSON, _ = json.Marshal(e.Capabilities())
 	case wire.PrepareProfile:
-		if request.Scheme != Scheme {
-			return failure(request, "invalid_input", "scheme must be beaconcrypt", "rejected"), false, false
+		if !isBeaconcryptScheme(request.Scheme) {
+			return failure(request, "invalid_input", "unsupported cryptographic scheme", "rejected"), false, false
 		}
 		if len(e.data.Profiles) >= e.config.MaxProfiles {
 			return failure(request, "capacity", "profile admission limit reached", "rejected"), false, false

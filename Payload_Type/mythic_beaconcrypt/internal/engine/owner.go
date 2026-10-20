@@ -17,7 +17,11 @@ import (
 )
 
 const (
-	Scheme = "beaconcrypt"
+	// Scheme preserves existing profiles and callbacks. The aliases select the
+	// client implementation while using the same Beaconcrypt server protocol.
+	Scheme       = "beaconcrypt"
+	SchemeNative = "Native"
+	SchemeWASM   = "WASM"
 	// Completed messages are base64 encoded inside the durable JSON result.
 	// Keep ample room below the 16 MiB result limit for framing and metadata.
 	MaxProviderMessageBytes = 8 << 20
@@ -117,8 +121,20 @@ func validStatePart(value string, limit int) bool {
 	return true
 }
 
+// SupportedSchemes returns independently owned capability names.
+func SupportedSchemes() []string { return []string{Scheme, SchemeNative, SchemeWASM} }
+
+func isBeaconcryptScheme(scheme string) bool {
+	switch scheme {
+	case Scheme, SchemeNative, SchemeWASM:
+		return true
+	default:
+		return false
+	}
+}
+
 func (e *Engine) Capabilities() wire.Capabilities {
-	return wire.Capabilities{APIVersion: wire.APIVersion, Schemes: []string{Scheme}, Establishment: "single_round", SessionPersistence: "durable", MaxMessageBytes: e.config.MaxMessageBytes, ResultRetentionSeconds: e.config.ResultRetentionSeconds}
+	return wire.Capabilities{APIVersion: wire.APIVersion, Schemes: SupportedSchemes(), Establishment: "single_round", SessionPersistence: "durable", MaxMessageBytes: e.config.MaxMessageBytes, ResultRetentionSeconds: e.config.ResultRetentionSeconds}
 }
 
 func (e *Engine) Activate(ctx context.Context) error {

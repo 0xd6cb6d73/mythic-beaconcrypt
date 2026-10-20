@@ -6,7 +6,6 @@ import base64
 import concurrent.futures
 import contextlib
 import datetime
-import errno
 import hashlib
 import json
 import os
@@ -18,13 +17,14 @@ import subprocess
 import sys
 import tempfile
 
-from test_poseidon import Mythic, await_result, read_env, write_report
+from test_poseidon import (Mythic, advertised_build_parameters, await_result,
+                           beaconcrypt_alias, beaconcrypt_selection, read_env, write_report)
 
 
 CRYPTO_SELECTIONS = {
     "none": "none",
     "aes256_hmac": "aes256_hmac",
-    "beaconcrypt": "provider:beaconcrypt:beaconcrypt",
+    "beaconcrypt": "provider:beaconcrypt:Native",
 }
 ARCHITECTURES = {
     "amd64": {"build_parameter": "AMD_x64", "elf_machine": 62},
@@ -67,16 +67,37 @@ def verify_elf_architecture(artifact, architecture):
         raise RuntimeError(f"Payload ELF machine {machine} does not match requested {architecture}")
 
 
-def crypto_selection(mode):
+def crypto_selection(mode, backend="native"):
     try:
-        return CRYPTO_SELECTIONS[mode]
+        selected = CRYPTO_SELECTIONS[mode]
     except KeyError:
         raise ValueError(f"Unsupported crypto mode: {mode}") from None
+    return beaconcrypt_selection(backend) if mode == "beaconcrypt" else selected
 
 
-def matrix_cases(p2p_agents, mixed_children=False):
+def callback_crypto(mode, backend="native"):
+    crypto_selection(mode, backend)
+    return beaconcrypt_alias(backend) if mode == "beaconcrypt" else mode
+
+
+def profile_beaconcrypt_backend(args, profile):
+    if profile not in ("http", "tcp"):
+        raise ValueError("Backend selection requires an http or tcp profile")
+    override = args.egress_beaconcrypt_backend if profile == "http" else args.p2p_beaconcrypt_backend
+    backend = override or args.beaconcrypt_backend
+    beaconcrypt_alias(backend)
+    return backend
+
+
+def matrix_cases(p2p_agents, mixed_children=False, cross_backend_only=False):
     if p2p_agents not in range(1, 4):
         raise ValueError("p2p-agents must be between 1 and 3")
+    if cross_backend_only:
+        if p2p_agents != 3:
+            raise ValueError("--cross-backend-only requires --p2p-agents=3")
+        if mixed_children:
+            raise ValueError("--cross-backend-only cannot be combined with --mixed-children")
+        return [("beaconcrypt", ["beaconcrypt"] * 3)]
     if mixed_children and p2p_agents != 3:
         raise ValueError("--mixed-children requires --p2p-agents=3")
     cases = []
@@ -146,13 +167,27 @@ def listening(process, port):
     if process.poll() is not None:
         raise RuntimeError("TCP child exited before its listener started")
     # Do not connect as a readiness probe: the relay must own the first connection.
+    # A failed bind also matches TIME_WAIT and another process's socket. Require
+    # a LISTEN inode held by this exact agent (or its QEMU process) instead.
+    proc = Path("/proc") / str(process.pid)
+    inodes = set()
     try:
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", port))
-    except OSError as error:
-        if error.errno == errno.EADDRINUSE:
-            return True
-        raise
+        for descriptor in (proc / "fd").iterdir():
+            try:
+                target = os.readlink(descriptor)
+            except FileNotFoundError:
+                continue
+            if target.startswith("socket:[") and target.endswith("]"):
+                inodes.add(target[8:-1])
+        for protocol in ("tcp", "tcp6"):
+            for line in (proc / "net" / protocol).read_text().splitlines()[1:]:
+                fields = line.split()
+                if len(fields) >= 10 and fields[3] == "0A" and fields[9] in inodes:
+                    if int(fields[1].rsplit(":", 1)[1], 16) == port:
+                        return True
+    except FileNotFoundError:
+        if process.poll() is not None:
+            raise RuntimeError("TCP child exited before its listener started") from None
     return None
 
 
@@ -168,7 +203,7 @@ def callback_for(client, agent):
            "cwd": str(agent["directory"])})["callback"]
     if not rows:
         return None
-    if len(rows) != 1 or rows[0]["crypto_type"] != agent["crypto"]:
+    if len(rows) != 1 or rows[0]["crypto_type"] != callback_crypto(agent["crypto"], agent.get("beaconcrypt_backend", "native")):
         raise RuntimeError("Callback identity or selected cryptography does not match " + agent["role"])
     if rows[0]["architecture"] != agent["architecture"]:
         raise RuntimeError("Callback architecture does not match " + agent["role"])
@@ -201,6 +236,10 @@ def run_case(client, work, egress, children, messages):
     child_cryptos = [child["crypto"] for child in children]
     mixed = len(set(child_cryptos)) > 1
     report = {"status": "fail", "egress_crypto": egress["crypto"],
+              "egress_beaconcrypt_backend": egress.get("beaconcrypt_backend", "native") if egress["crypto"] == "beaconcrypt" else None,
+              "p2p_beaconcrypt_backends": [child.get("beaconcrypt_backend", "native") if child["crypto"] == "beaconcrypt" else None for child in children],
+              "egress_crypto_alias": callback_crypto(egress["crypto"], egress.get("beaconcrypt_backend", "native")),
+              "p2p_crypto_aliases": [callback_crypto(child["crypto"], child.get("beaconcrypt_backend", "native")) for child in children],
               "p2p_crypto": "mixed" if mixed else child_cryptos[0],
               "p2p_cryptos": child_cryptos, "mixed_children": mixed,
               "egress_architecture": egress["architecture"],
@@ -214,6 +253,7 @@ def run_case(client, work, egress, children, messages):
         logs.append(log)
         agent = {"role": role, "directory": directory, "payload": payload,
                  "crypto": payload["crypto"], "architecture": payload["architecture"],
+                 "beaconcrypt_backend": payload.get("beaconcrypt_backend", "native"),
                  "commands": payload["commands"],
                  "process": subprocess.Popen(payload["command"], cwd=directory,
                      stdout=log, stderr=subprocess.STDOUT, start_new_session=True)}
@@ -235,6 +275,8 @@ def run_case(client, work, egress, children, messages):
             raise RuntimeError("Agents did not register distinct callbacks")
         report["agents"] = [{"role": agent["role"], "directory": str(agent["directory"]),
             "crypto": agent["crypto"], "architecture": agent["architecture"],
+            "beaconcrypt_backend": agent["beaconcrypt_backend"] if agent["crypto"] == "beaconcrypt" else None,
+            "crypto_alias": callback_crypto(agent["crypto"], agent["beaconcrypt_backend"]),
             "command": agent["payload"]["command"],
             "pid": agent["process"].pid, "payload_uuid": agent["payload"]["uuid"],
             "callback": agent["callback"]} for agent in agents]
@@ -324,6 +366,13 @@ def main():
     parser.add_argument("--arm64-sysroot", help="ARM64 loader/library root passed to qemu-aarch64 -L")
     parser.add_argument("--p2p-agents", type=int, choices=range(1, 4), default=3)
     parser.add_argument("--messages", type=int, choices=range(1, 4), default=3)
+    parser.add_argument("--beaconcrypt-backend", choices=("native", "wasm"), default="native")
+    parser.add_argument("--egress-beaconcrypt-backend", choices=("native", "wasm"),
+                        help="Override the Beaconcrypt backend for the HTTP egress")
+    parser.add_argument("--p2p-beaconcrypt-backend", choices=("native", "wasm"),
+                        help="Override the Beaconcrypt backend for the TCP children")
+    parser.add_argument("--cross-backend-only", action="store_true",
+                        help="Run only one Beaconcrypt egress with three Beaconcrypt children")
     parser.add_argument("--mixed-children", action="store_true",
                         help="Add one cell per egress mode with none, AESPSK and Beaconcrypt children together (requires --p2p-agents=3)")
     parser.add_argument("--work-dir")
@@ -332,7 +381,7 @@ def main():
     if sys.platform != "linux":
         parser.error("Requires Linux for real agent processes")
     try:
-        cases = matrix_cases(args.p2p_agents, args.mixed_children)
+        cases = matrix_cases(args.p2p_agents, args.mixed_children, args.cross_backend_only)
         host = host_architecture()
         args.egress_architecture = args.egress_architecture or host
         args.p2p_architecture = args.p2p_architecture or host
@@ -348,6 +397,13 @@ def main():
         parser.error("work-dir must be empty")
     print("Evidence directory: " + str(work), flush=True)
     report = {"status": "fail", "mythic": args.url, "crypto_modes": list(CRYPTO_SELECTIONS),
+              "beaconcrypt_backend": args.beaconcrypt_backend,
+              "beaconcrypt_alias": beaconcrypt_alias(args.beaconcrypt_backend),
+              "egress_beaconcrypt_backend": profile_beaconcrypt_backend(args, "http"),
+              "p2p_beaconcrypt_backend": profile_beaconcrypt_backend(args, "tcp"),
+              "egress_beaconcrypt_alias": beaconcrypt_alias(profile_beaconcrypt_backend(args, "http")),
+              "p2p_beaconcrypt_alias": beaconcrypt_alias(profile_beaconcrypt_backend(args, "tcp")),
+              "cross_backend_only": args.cross_backend_only,
               "mixed_children": args.mixed_children, "host_architecture": host,
               "egress_architecture": args.egress_architecture,
               "p2p_architecture": args.p2p_architecture, "execution_prefixes": prefixes, "cases": []}
@@ -374,6 +430,7 @@ def main():
         cache = {}
 
         def build(profile, crypto, architecture, port=0):
+            backend = profile_beaconcrypt_backend(args, profile)
             key = (profile, crypto, architecture, port)
             if key in cache:
                 return cache[key]
@@ -381,7 +438,7 @@ def main():
             directory = work / ("build-" + name)
             directory.mkdir()
             commands = ["pwd", "exit"] + (["link_tcp"] if profile == "http" else [])
-            parameters = {"AESPSK": crypto_selection(crypto),
+            parameters = {"AESPSK": crypto_selection(crypto, backend),
                 "encrypted_exchange_check": False,
                 "killdate": (datetime.date.today() + datetime.timedelta(days=2)).isoformat()}
             if profile == "http":
@@ -393,11 +450,11 @@ def main():
                 parameters.update(port=str(port), localhost_only=True)
             configuration = {"payload_type": "poseidon", "selected_os": "Linux", "filename": "p2p-" + name,
                 "description": "Real P2P cryptography matrix " + name, "commands": commands,
-                "build_parameters": [{"name": key, "value": value} for key, value in {
+                "build_parameters": advertised_build_parameters({
                     "architecture": ARCHITECTURES[architecture]["build_parameter"],
                     "mode": "default", "garble": False, "debug": False,
                     "static": False, "proxy_bypass": True, "egress_order": [profile],
-                    "egress_failover": "failover", "failover_threshold": 10}.items()],
+                    "egress_failover": "failover", "failover_threshold": 10}),
                 "c2_profiles": [{"c2_profile": profile, "c2_profile_parameters": parameters}]}
             write_report(directory / "payload-config.json", configuration)
             submitted = client.request("/createpayload_webhook", {"input": {"payloadDefinition": json.dumps(configuration)}})
@@ -416,8 +473,11 @@ def main():
             binary.chmod(0o700)
             command = prefixes[architecture] + [str(binary)]
             write_report(directory / "build.json", dict(payload, architecture=architecture,
-                         command=command, sha256=hashlib.sha256(artifact).hexdigest()))
+                         command=command, sha256=hashlib.sha256(artifact).hexdigest(),
+                         crypto_alias=callback_crypto(crypto, backend),
+                         beaconcrypt_backend=backend if crypto == "beaconcrypt" else None))
             result = dict(payload, binary=binary, crypto=crypto, architecture=architecture,
+                          beaconcrypt_backend=backend,
                           command=command, commands=commands, port=port)
             cache[key] = result
             print("Built real " + name + " payload " + payload["uuid"], flush=True)

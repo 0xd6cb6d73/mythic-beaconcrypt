@@ -56,7 +56,7 @@ func (c *Campaigns) Handle(ctx context.Context, request wire.Request) wire.Respo
 	if len(request.Message) > c.config.MaxMessageBytes {
 		return failure(request, "invalid_input", "provider message exceeds configured limit", "rejected")
 	}
-	if request.Scheme != "" && request.Scheme != Scheme {
+	if request.Scheme != "" && !isBeaconcryptScheme(request.Scheme) {
 		return failure(request, "invalid_input", "unsupported cryptographic scheme", "rejected")
 	}
 	stateID := c.stateID(request.OperationScopeID)
@@ -66,7 +66,7 @@ func (c *Campaigns) Handle(ctx context.Context, request wire.Request) wire.Respo
 	if request.Method == wire.PrepareProfile {
 		// Reject malformed profiles before a request can provision an identity.
 		var config map[string]json.RawMessage
-		if request.Scheme != Scheme || len(request.ProviderJSON) > 0 && (json.Unmarshal(request.ProviderJSON, &config) != nil || len(config) != 0) {
+		if !isBeaconcryptScheme(request.Scheme) || len(request.ProviderJSON) > 0 && (json.Unmarshal(request.ProviderJSON, &config) != nil || len(config) != 0) {
 			return failure(request, "invalid_input", "unsupported profile configuration", "rejected")
 		}
 	}
