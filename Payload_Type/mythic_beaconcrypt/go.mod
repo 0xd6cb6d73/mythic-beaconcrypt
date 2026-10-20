@@ -6,7 +6,7 @@ require (
 	github.com/0xd6cb6d73/beaconcrypt v0.6.1
 	github.com/MythicMeta/MythicContainer v1.7.0-rc5
 	github.com/google/uuid v1.6.0
-	github.com/rabbitmq/amqp091-go v1.13.0
+	github.com/rabbitmq/amqp091-go v1.14.0
 )
 
 require (
