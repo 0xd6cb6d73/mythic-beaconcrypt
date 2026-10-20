@@ -30,7 +30,7 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-Beaconcrypt v0.6.0 (commit cd4801408cd230fd6fb63d189fb39cdca68c9f50)
+Beaconcrypt v0.6.1 (commit 0c629b1c0af4139b77551da30d39e18b0e77698d)
 includes the generated EverCBOR parser under the Apache License 2.0. The
 unmodified generated sources originate from EverParse v2026.08.21, commit
 1c9559ad1c59e1d2c511c7c4ac7cb1b162f59c3f. The license is reproduced in

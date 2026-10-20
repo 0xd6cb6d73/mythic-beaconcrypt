@@ -6,7 +6,7 @@ with this provider.
 The Poseidon branch targets Mythic 4.0 beta with the generic crypto provider
 extension from Mythic's `crypto-shim` branch. It adds an opt-in Beaconcrypt client to
 Poseidon; the existing AES builds keep their normal configuration.
-The Beaconcrypt client and native library are pinned to v0.6.0. Upgrade the provider and agents together; v0.5.2 wire messages are incompatible with the new CBOR encoding.
+The provider and integration-test client use Beaconcrypt v0.6.1. The external Poseidon checkout selects its own pinned library; v0.6.0 and v0.6.1 share the CBOR wire format. Older v0.5.2 wire messages are incompatible.
 
 Install the Poseidon checkout being tested and enable its local build context.
 This exercises that source rather than a published image. From your Mythic

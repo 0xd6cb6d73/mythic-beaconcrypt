@@ -32,7 +32,9 @@ When deliberately adopting a template update, first copy the changed scaffold wi
 - Mythic's generic crypto-provider API v1 on `crypto-shim`, using plain JSON RPC and ordinary Mythic authorization-context headers.
 - Mythic `crypto-shim` with request-scoped container identity. Storage uses Mythic's standard serial RPC dispatch. Earlier MAC-envelope revisions are incompatible with this wire format.
 - MythicContainer's [`Mythic-v4.0.0` branch](https://github.com/MythicMeta/MythicContainer/tree/Mythic-v4.0.0), reviewed at `a4c7e05f17b02e86820cc92ca425095bbe3b19be`; consuming-container wire version `v1.5.0`.
-- Beaconcrypt `v0.6.0`, tag commit `cd4801408cd230fd6fb63d189fb39cdca68c9f50`, pinned in `go.mod` and the matching native archive.
+- Beaconcrypt `v0.6.1`, tag commit `0c629b1c0af4139b77551da30d39e18b0e77698d`, pinned in `go.mod` and the matching native archive.
+
+Beaconcrypt v0.6.1 retains v0.6.0's CBOR wire format and binary version-2 snapshots. This provider uses the native CGO backend and verified Linux release archives.
 
 Beaconcrypt v0.6.0 replaces Cap'n Proto transport serialization with deterministic CBOR. Upgrade the provider and rebuild Beaconcrypt agents together: v0.5.2 and v0.6.0 wire messages are incompatible. The native snapshot format is unchanged, but queued messages and retained replies can still contain the old wire format; drain outstanding exchanges before upgrading and reestablish old agents. Mythic continues to carry opaque provider bytes through the same API, framing, and storage schema. The library's new 32 MiB wire cap does not change this integration's configured message limits.
 
@@ -125,7 +127,7 @@ The test environment needs a writable `/build`, matching Poseidon's normal
 builder. Full setup, installed-stack commands, and evidence/cleanup behavior are
 documented with the suites.
 
-## Persistence with Beaconcrypt v0.6.0
+## Persistence with Beaconcrypt v0.6.1
 
 The Go `SnapshotStore` interface was evaluated against Mythic's durable
 storage contract. `Load` returns the trusted current snapshot;

@@ -1,6 +1,6 @@
 package native
 
-// cborInput borrows only the primitive values present in Beaconcrypt v0.6.0's
+// cborInput borrows only the primitive values present in Beaconcrypt's
 // fixed transport arrays. It rejects nonminimal/indefinite encodings, containers,
 // and truncated values without allocating from untrusted lengths. The Go binding
 // exposes no nonmutating transport inspection API; native code still authenticates

@@ -1,3 +1,3 @@
 # VERSION RUST_TRIPLE ASSET SHA256
-v0.6.0 x86_64-unknown-linux-gnu libbeaconcrypt-gobinds-ubuntu-24.04.a bf5d541d02207f2ef54ef94eda74d20c933241bba823c4dadf1dbc245e233eb1
-v0.6.0 aarch64-unknown-linux-gnu libbeaconcrypt-gobinds-ubuntu-24.04-arm.a ed1943f9c1dd5cd273325d827b833b1eddda88b2400d3b6d1c3238578fb91554
+v0.6.1 x86_64-unknown-linux-gnu libbeaconcrypt-gobinds-ubuntu-24.04.a b1d47b2ec503b25f9e2df4eda478b3ee8b28c3d3c3b74f0ba1f954e2eec78a1a
+v0.6.1 aarch64-unknown-linux-gnu libbeaconcrypt-gobinds-ubuntu-24.04-arm.a d8686362065e32e5828fa9847b7f7ec4b41328ef04632d87c05bbb7db9f417cf
