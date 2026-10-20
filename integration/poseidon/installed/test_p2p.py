@@ -8,6 +8,7 @@ import contextlib
 import datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -19,6 +20,9 @@ import tempfile
 
 from test_poseidon import (Mythic, advertised_build_parameters, await_result,
                            beaconcrypt_alias, beaconcrypt_selection, read_env, write_report)
+from payload_sizes import parse_payload_size
+from payload_workload import (payload_environment, run_payload_workload,
+                              verify_payload_results)
 
 
 CRYPTO_SELECTIONS = {
@@ -230,7 +234,7 @@ def assert_links(client, agents):
     return edges if linked == set(children) else None
 
 
-def run_case(client, work, egress, children, messages):
+def run_case(client, work, egress, children, messages, payload_size=0, payload_timeout=90):
     work.mkdir()
     agents, logs, pwd_tasks = [], [], []
     child_cryptos = [child["crypto"] for child in children]
@@ -245,6 +249,8 @@ def run_case(client, work, egress, children, messages):
               "egress_architecture": egress["architecture"],
               "p2p_architectures": [child["architecture"] for child in children],
               "messages_per_agent": messages, "agents": [], "pwd_rounds": []}
+    if payload_size:
+        report["payload_value_bytes"] = payload_size
 
     def start(payload, role):
         directory = work / role
@@ -256,7 +262,8 @@ def run_case(client, work, egress, children, messages):
                  "beaconcrypt_backend": payload.get("beaconcrypt_backend", "native"),
                  "commands": payload["commands"],
                  "process": subprocess.Popen(payload["command"], cwd=directory,
-                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)}
+                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                     env=payload_environment(directory) if payload_size else None)}
         agents.append(agent)
         return agent
 
@@ -309,11 +316,18 @@ def run_case(client, work, egress, children, messages):
                 return assert_pwd_responses(round_data["actual"], expected)
             await_result("exact per-role pwd results", observed, 120)
             pwd_tasks.extend(expected)
+            report["task_response_exchanges"] = len(pwd_tasks)
             report["graph_edges"] = assert_links(client, agents)
             if not report["graph_edges"]:
                 raise RuntimeError("A P2P route disappeared during dispatch")
             print(f"{work.name}: round {round_index + 1}, {len(agents)} exact pwd responses including egress", flush=True)
             write_report(work / "report.json", report)
+        if payload_size:
+            run_payload_workload(client, agents, payload_size, messages, report, work,
+                                 timeout=payload_timeout)
+            report["graph_edges"] = assert_links(client, agents)
+            if not report["graph_edges"]:
+                raise RuntimeError("A P2P route disappeared during the payload probe")
         # Children must finish before their relay exits, keeping their real route live.
         for agent in agents[1:]:
             task(client, agent["callback"], "exit")
@@ -327,6 +341,8 @@ def run_case(client, work, egress, children, messages):
             expected = round_data["expected"]
             if not assert_pwd_responses(read_tasks(client, [item["id"] for item in expected]), expected):
                 raise RuntimeError("Persisted results unavailable after exit")
+        if payload_size:
+            verify_payload_results(client, report["payload_rounds"], report["payload_control_pwd_tasks"])
         report.update(status="pass", task_response_exchanges=len(pwd_tasks))
         return report
     except BaseException as error:
@@ -366,6 +382,12 @@ def main():
     parser.add_argument("--arm64-sysroot", help="ARM64 loader/library root passed to qemu-aarch64 -L")
     parser.add_argument("--p2p-agents", type=int, choices=range(1, 4), default=3)
     parser.add_argument("--messages", type=int, choices=range(1, 4), default=3)
+    parser.add_argument("--payload-sizes", nargs="+", type=parse_payload_size,
+                        help="Multiply each crypto cell by these value sizes, e.g. 1KiB 64KiB 1MiB 10MiB")
+    parser.add_argument("--payload-timeout", type=float, default=90,
+                        help="Seconds to wait for each exact large-output stage (default: 90)")
+    parser.add_argument("--keep-going", action="store_true",
+                        help="Continue after failed cells; the overall result still fails")
     parser.add_argument("--beaconcrypt-backend", choices=("native", "wasm"), default="native")
     parser.add_argument("--egress-beaconcrypt-backend", choices=("native", "wasm"),
                         help="Override the Beaconcrypt backend for the HTTP egress")
@@ -378,6 +400,10 @@ def main():
     parser.add_argument("--work-dir")
     parser.add_argument("--insecure", action="store_true")
     args = parser.parse_args()
+    if not math.isfinite(args.payload_timeout) or args.payload_timeout <= 0:
+        parser.error("payload-timeout must be a finite positive number")
+    if args.payload_sizes and len(set(args.payload_sizes)) != len(args.payload_sizes):
+        parser.error("payload-sizes must not contain duplicate sizes")
     if sys.platform != "linux":
         parser.error("Requires Linux for real agent processes")
     try:
@@ -407,6 +433,8 @@ def main():
               "mixed_children": args.mixed_children, "host_architecture": host,
               "egress_architecture": args.egress_architecture,
               "p2p_architecture": args.p2p_architecture, "execution_prefixes": prefixes, "cases": []}
+    if args.payload_sizes:
+        report["payload_value_bytes"] = args.payload_sizes
     client = Mythic(args.url, args.insecure)
     try:
         if args.api_token_file:
@@ -438,6 +466,8 @@ def main():
             directory = work / ("build-" + name)
             directory.mkdir()
             commands = ["pwd", "exit"] + (["link_tcp"] if profile == "http" else [])
+            if args.payload_sizes:
+                commands += ["setenv", "getenv"]
             parameters = {"AESPSK": crypto_selection(crypto, backend),
                 "encrypted_exchange_check": False,
                 "killdate": (datetime.date.today() + datetime.timedelta(days=2)).isoformat()}
@@ -489,12 +519,29 @@ def main():
                         for crypto, port in zip(child_cryptos, ports)]
             child_label = "mixed" if len(set(child_cryptos)) > 1 else child_cryptos[0]
             case_name = f"egress-{egress_crypto}-{args.egress_architecture}_p2p-{child_label}-{args.p2p_architecture}"
-            case = run_case(client, work / case_name, egress, children, args.messages)
-            report["cases"].append(case)
-            write_report(work / "report.json", report)
-        report.update(status="pass", case_count=len(report["cases"]),
+            for size in args.payload_sizes or [0]:
+                directory = work / (case_name + (f"_payload-{size}" if size else ""))
+                try:
+                    case = run_case(client, directory, egress, children, args.messages,
+                                    payload_size=size, payload_timeout=args.payload_timeout)
+                except (RuntimeError, OSError, KeyError, ValueError, subprocess.TimeoutExpired) as error:
+                    case = json.loads((directory / "report.json").read_text()) if (directory / "report.json").exists() else {"status": "fail", "error": str(error), "agents": []}
+                    report["cases"].append(case)
+                    write_report(work / "report.json", report)
+                    if not args.keep_going:
+                        raise
+                    print(f"FAIL: {directory.name}: {error}", file=sys.stderr, flush=True)
+                    continue
+                report["cases"].append(case)
+                write_report(work / "report.json", report)
+        failures = sum(case["status"] != "pass" for case in report["cases"])
+        report.update(status="fail" if failures else "pass", case_count=len(report["cases"]),
                       agents=sum(len(case["agents"]) for case in report["cases"]),
-                      task_response_exchanges=sum(case["task_response_exchanges"] for case in report["cases"]))
+                      task_response_exchanges=sum(case.get("task_response_exchanges", 0) for case in report["cases"]))
+        if args.payload_sizes:
+            report["payload_task_response_exchanges"] = sum(case.get("payload_task_response_exchanges", 0) for case in report["cases"])
+        if failures:
+            raise RuntimeError(f"{failures} of {report['case_count']} matrix cells failed; see per-case reports")
         print(f"PASS: {report['case_count']} matrix cells, {report['agents']} real agents, {report['task_response_exchanges']} exact pwd responses", flush=True)
     except BaseException as error:
         report["error"] = str(error) or type(error).__name__

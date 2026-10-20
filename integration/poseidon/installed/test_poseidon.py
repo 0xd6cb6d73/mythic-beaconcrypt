@@ -8,6 +8,7 @@ import contextlib
 import datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -20,6 +21,10 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+
+from payload_sizes import parse_payload_size
+from payload_workload import (payload_environment, run_payload_workload,
+                              verify_payload_results)
 
 
 def read_env(path):
@@ -61,11 +66,18 @@ class Mythic:
             raise RuntimeError("GraphQL: " + json.dumps(reply["errors"]))
         return reply["data"]
 
-    def task(self, callback, command):
-        reply = self.request("/create_task_webhook", {"input": {
-            "callback_display_id": callback["display_id"], "command": command, "params": ""}})
+    def task(self, callback, command, params=""):
+        try:
+            reply = self.request("/create_task_webhook", {"input": {
+                "callback_display_id": callback["display_id"], "command": command, "params": params}})
+        except RuntimeError:
+            if params:
+                raise RuntimeError(f"Task {command} request failed with {len(params.encode())} parameter bytes") from None
+            raise
         if reply.get("status") != "success" or not reply.get("id"):
-            raise RuntimeError(f"Task {command} creation failed: {reply}")
+            # The server can echo task parameters in an error reply. Never dump
+            # potentially megabytes of payload data into the evidence log.
+            raise RuntimeError(f"Task {command} creation failed (status={reply.get('status')!r})")
         return reply["id"]
 
 
@@ -101,13 +113,18 @@ def advertised_build_parameters(parameters):
     return [{"name": name, "value": value} for name, value in parameters.items()]
 
 
-def run_case(client, binary, payload_id, work, agent_count, message_count, backend):
+def run_case(client, binary, payload_id, work, agent_count, message_count, backend,
+             payload_size=0, payload_timeout=90):
     """Start fresh agents, submit concurrent rounds, and stop only these agents."""
     work.mkdir()
     processes, logs, callbacks, tasks = [], [], [], []
     report = {"status": "fail", "agents": agent_count, "messages_per_agent": message_count,
               "beaconcrypt_backend": backend, "beaconcrypt_alias": beaconcrypt_alias(backend),
               "callbacks": callbacks, "pwd_tasks": tasks}
+    expected_commands = {"pwd", "exit"}
+    if payload_size:
+        expected_commands.update(("setenv", "getenv"))
+        report["payload_value_bytes"] = payload_size
 
     def require_live_agents():
         for index, process in enumerate(processes):
@@ -146,18 +163,21 @@ def run_case(client, binary, payload_id, work, agent_count, message_count, backe
             directory.mkdir()
             log = (directory / "agent.log").open("wb")
             logs.append(log)
+            process_options = {"env": payload_environment(directory)} if payload_size else {}
             processes.append(subprocess.Popen([str(binary)], cwd=directory, stdout=log,
-                                              stderr=subprocess.STDOUT, start_new_session=True))
+                                              stderr=subprocess.STDOUT, start_new_session=True,
+                                              **process_options))
 
         def checked_in():
             require_live_agents()
-            rows = client.graphql("""query Callbacks($payload:Int!,$pids:[Int!]!,$directories:[String!]!) {
+            rows = client.graphql("""query Callbacks($payload:Int!,$pids:[Int!]!,$directories:[String!]!,$commands:[String!]!) {
               callback(where:{registered_payload_id:{_eq:$payload},pid:{_in:$pids},cwd:{_in:$directories}}) {
                 id display_id pid cwd agent_callback_id crypto_type
-                loadedcommands(where:{command:{cmd:{_in:["pwd","exit"]}}}) {command {cmd}}
+                loadedcommands(where:{command:{cmd:{_in:$commands}}}) {command {cmd}}
               }
             }""", {"payload": payload_id, "pids": [process.pid for process in processes],
-                   "directories": [str(work / f"agent-{index + 1}") for index in range(agent_count)]})["callback"]
+                   "directories": [str(work / f"agent-{index + 1}") for index in range(agent_count)],
+                   "commands": sorted(expected_commands)})["callback"]
             if len(rows) < agent_count:
                 return None
             by_pid = {row["pid"]: row for row in rows}
@@ -171,7 +191,7 @@ def run_case(client, binary, payload_id, work, agent_count, message_count, backe
                 if callback["crypto_type"] != beaconcrypt_alias(backend):
                     raise RuntimeError("Callback does not use the selected Beaconcrypt alias")
                 # Callback creation commits before its loaded commands are copied.
-                if {loaded["command"]["cmd"] for loaded in callback["loadedcommands"]} != {"pwd", "exit"}:
+                if {loaded["command"]["cmd"] for loaded in callback["loadedcommands"]} != expected_commands:
                     return None
                 ordered.append(callback)
             return ordered
@@ -187,7 +207,15 @@ def run_case(client, binary, payload_id, work, agent_count, message_count, backe
                            for index, task_id in enumerate(ids)]
             tasks.extend(round_tasks)
             await_result(f"round {round_index + 1} real pwd responses", lambda: assert_responses(round_tasks), 120)
+            report["task_response_exchanges"] = len(tasks)
             print(f"{work.name}: round {round_index + 1}, {agent_count} correct responses", flush=True)
+
+        if payload_size:
+            agents = [{"callback": callback, "process": processes[index],
+                       "directory": work / f"agent-{index + 1}", "role": f"agent-{index + 1}"}
+                      for index, callback in enumerate(callbacks)]
+            run_payload_workload(client, agents, payload_size, message_count, report, work,
+                                 timeout=payload_timeout)
 
         # Submit all exit controls before waiting for any owned process to stop.
         for callback in callbacks:
@@ -197,6 +225,8 @@ def run_case(client, binary, payload_id, work, agent_count, message_count, backe
                 raise RuntimeError("Agent did not exit successfully through its real exit task")
         if not assert_responses(tasks):
             raise RuntimeError("Task outputs were unavailable after all agents exited")
+        if payload_size:
+            verify_payload_results(client, report["payload_rounds"], report["payload_control_pwd_tasks"])
         report.update(status="pass", task_response_exchanges=len(tasks))
         return report
     except BaseException as error:
@@ -229,6 +259,12 @@ def main():
     parser.add_argument("--agents", type=int, choices=range(1, 4), default=3)
     parser.add_argument("--messages", type=int, choices=range(1, 4), default=3)
     parser.add_argument("--matrix", action="store_true", help="Run all nine combinations of 1–3 agents and 1–3 messages, overriding --agents/--messages")
+    parser.add_argument("--payload-sizes", nargs="+", type=parse_payload_size,
+                        help="Add exact-sized task and response values for each size, e.g. 1KiB 64KiB 1MiB 10MiB")
+    parser.add_argument("--payload-timeout", type=float, default=90,
+                        help="Seconds to wait for each large-payload round (default: 90)")
+    parser.add_argument("--keep-going", action="store_true",
+                        help="Retain failed case reports and attempt the remaining matrix cases")
     parser.add_argument("--beaconcrypt-backend", choices=("native", "wasm"), default="native")
     parser.add_argument("--work-dir", help="Fresh directory for reports, downloaded ELF, and agent logs")
     parser.add_argument("--insecure", action="store_true", help="Accept the local instance's self-signed HTTPS certificate")
@@ -237,6 +273,10 @@ def main():
         parser.error("This Beaconcrypt/Poseidon integration currently requires Linux amd64")
     if not 1 <= args.callback_port <= 65535:
         parser.error("callback-port must be between 1 and 65535")
+    if not math.isfinite(args.payload_timeout) or args.payload_timeout <= 0:
+        parser.error("payload-timeout must be a finite positive number")
+    if args.payload_sizes and len(set(args.payload_sizes)) != len(args.payload_sizes):
+        parser.error("payload-sizes must not contain duplicate byte sizes")
     work = Path(args.work_dir or tempfile.mkdtemp(prefix="poseidon-installed-e2e-")).resolve()
     work.mkdir(mode=0o700, parents=True, exist_ok=True)
     if any(work.iterdir()):
@@ -246,6 +286,8 @@ def main():
               "callback": f"http://127.0.0.1:{args.callback_port}",
               "beaconcrypt_backend": args.beaconcrypt_backend,
               "beaconcrypt_alias": beaconcrypt_alias(args.beaconcrypt_backend), "cases": []}
+    if args.payload_sizes:
+        report["payload_value_bytes"] = args.payload_sizes
     try:
         client = Mythic(args.url, args.insecure)
         if args.api_token_file:
@@ -281,7 +323,7 @@ def main():
         configuration = {
             "payload_type": "poseidon", "selected_os": "Linux", "filename": "poseidon-beaconcrypt-installed",
             "description": "Installed HTTP C2 / Poseidon / Beaconcrypt end-to-end test",
-            "commands": ["pwd", "exit"],
+            "commands": ["pwd", "exit", "setenv", "getenv"] if args.payload_sizes else ["pwd", "exit"],
             "build_parameters": advertised_build_parameters({
                 "architecture": "AMD_x64", "mode": "default", "garble": False, "debug": False,
                 "static": False, "proxy_bypass": True, "egress_order": ["http"],
@@ -324,16 +366,47 @@ def main():
         print(f"Downloaded uploaded Poseidon ELF ({len(artifact)} bytes)", flush=True)
 
         cells = [(agents, messages) for agents in range(1, 4) for messages in range(1, 4)] if args.matrix else [(args.agents, args.messages)]
-        for agents, messages in cells:
-            case = run_case(client, binary, payload["id"], work / f"agents-{agents}_messages-{messages}", agents, messages, args.beaconcrypt_backend)
+        cases = [(agents, messages, size) for size in (args.payload_sizes or [0])
+                 for agents, messages in cells]
+        for agents, messages, size in cases:
+            case_name = f"agents-{agents}_messages-{messages}"
+            if size:
+                case_name += f"_payload-{size}"
+            case_work = work / case_name
+            try:
+                case = run_case(client, binary, payload["id"], case_work, agents, messages,
+                                args.beaconcrypt_backend, size, args.payload_timeout)
+            except (RuntimeError, OSError, KeyError, ValueError, subprocess.TimeoutExpired):
+                # run_case persists its failed report after stopping its owned
+                # processes; include it before deciding whether to continue.
+                case = json.loads((case_work / "report.json").read_text())
+                report["cases"].append(case)
+                write_report(work / "report.json", report)
+                if not args.keep_going:
+                    raise
+                print(f"FAIL: {case_name}: {case['error']}", flush=True)
+                continue
             report["cases"].append(case)
             all_callbacks = [callback for result in report["cases"] for callback in result["callbacks"]]
             if len({callback["agent_callback_id"] for callback in all_callbacks}) != len(all_callbacks):
-                raise RuntimeError("Agent callbacks were reused across test cases")
+                case.update(status="fail", error="Agent callbacks were reused across test cases")
+                write_report(case_work / "report.json", case)
+                write_report(work / "report.json", report)
+                if not args.keep_going:
+                    raise RuntimeError(case["error"])
+                print(f"FAIL: {case_name}: {case['error']}", flush=True)
             write_report(work / "report.json", report)
-        report.update(status="pass", agents=sum(case["agents"] for case in report["cases"]),
-                      task_response_exchanges=sum(case["task_response_exchanges"] for case in report["cases"]))
-        print(f"PASS: {len(cells)} cases, {report['agents']} real Poseidon agents, {report['task_response_exchanges']} pwd exchanges through installed HTTP C2", flush=True)
+        failed_cases = sum(case["status"] != "pass" for case in report["cases"])
+        report.update(status="fail" if failed_cases else "pass",
+                      agents=sum(case["agents"] for case in report["cases"]),
+                      task_response_exchanges=sum(case.get("task_response_exchanges", 0) for case in report["cases"]))
+        if args.payload_sizes:
+            report["payload_task_response_exchanges"] = sum(
+                case.get("payload_task_response_exchanges", 0) for case in report["cases"])
+        if failed_cases:
+            report["failed_cases"] = failed_cases
+            raise RuntimeError(f"{failed_cases} of {len(cases)} HTTP matrix cases failed; see {work / 'report.json'}")
+        print(f"PASS: {len(cases)} cases, {report['agents']} real Poseidon agents, {report['task_response_exchanges']} pwd exchanges through installed HTTP C2", flush=True)
     except BaseException as error:
         report["error"] = str(error) or type(error).__name__
         raise

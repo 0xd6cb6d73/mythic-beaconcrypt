@@ -208,3 +208,72 @@ integration itself always uses real agents and the real server:
 ```sh
 python3 -m unittest discover -s integration/poseidon/installed -p 'test_*.py' -v
 ```
+
+## Large task and response values
+
+Both installed suites accept a size axis. To exercise 1 KiB, 64 KiB, 1 MiB and
+10 MiB values with three simultaneous agents and three rounds through HTTP:
+
+```sh
+python3 integration/poseidon/installed/test_poseidon.py --insecure \
+  --api-token-file /path/to/temporary-bot-token \
+  --beaconcrypt-backend native --agents 3 --messages 3 \
+  --payload-sizes 1KiB 64KiB 1MiB 10MiB --keep-going \
+  --work-dir /path/to/http-native-sizes
+```
+
+Add `--matrix` to multiply these sizes by all nine agent/message-count cells,
+and repeat with `--beaconcrypt-backend wasm` and a fresh campaign. For the P2P
+encryption matrix, including mixed children:
+
+```sh
+python3 integration/poseidon/installed/test_p2p.py --insecure \
+  --api-token-file /path/to/temporary-bot-token \
+  --beaconcrypt-backend native --mixed-children \
+  --payload-sizes 1KiB 64KiB 1MiB 10MiB --keep-going \
+  --work-dir /path/to/p2p-native-sizes
+```
+
+This runs 48 P2P cells: twelve crypto combinations times four sizes. Architecture
+and backend role overrides apply as before, including cross-backend cells.
+Sizes accept exact byte counts or binary `KiB`/`MiB` units. Omitting
+`--payload-sizes` retains the original `pwd` workload. Each size starts fresh
+agents in new directories and reuses the relevant real payload builds.
+`--keep-going` records failures and attempts the remaining cells; it still exits
+unsuccessfully if any cell fails. Setup and build failures always stop the run.
+`--payload-timeout` bounds the wait for each command's complete stored output
+(default 90 seconds). Normal API request timeouts and agent shutdown limits
+also apply.
+
+For each size, the existing `pwd` rounds run first. Each additional payload round
+then submits `setenv BEACONCRYPT_E2E_PAYLOAD <value>` concurrently to every agent,
+checks the exact echoed bytes, submits `getenv`, and checks the complete sorted
+environment. Values are deterministic SHAKE-derived ASCII, unique per directory,
+size and round; their byte count is exactly the requested size. Task parameters,
+the echoed prefix, environment markers, JSON, encryption and relay wrapping add
+overhead beyond that size. The agents receive only a minimal test environment,
+so `getenv` cannot upload the runner's inherited credentials. Its distinct
+directory marker detects commands delivered to the wrong process even when an
+echoed challenge would otherwise appear correct. A final `pwd` control checks
+dispatch and liveness after the large exchanges.
+
+The oracle joins stored response rows in order and checks every byte. It waits
+for the entire value even if Poseidon marks its first output chunk completed,
+and rechecks persisted results after agent exit to detect late extra output.
+Reports store task IDs, seeds, exact response lengths, SHA-256 hashes, chunk
+counts and elapsed times rather than duplicating megabytes of output. Actual
+task parameters and responses remain in Mythic. `task_response_exchanges` still
+counts the original `pwd` rounds; `payload_task_response_exchanges` separately
+counts successful `setenv` and `getenv` exchanges. Post-payload `pwd` controls,
+registration, links, polling and exits are additional traffic.
+
+These are logical task and response sizes, not a promise that each value is one
+wire frame. Poseidon normally splits user output into 512,000-byte chunks, and
+HTTP polling and P2P delegation can aggregate multiple chunks or agents into a
+larger envelope. The tests do not change chunking, profile containers, or message
+limits. The provider currently advertises a 1 MiB default and permits at most
+8 MiB via `BEACONCRYPT_MAX_MESSAGE_BYTES`; other library and transport bounds
+also apply. A 1 MiB value already exceeds the default once wrapped, and 10 MiB
+can exceed several bounds. Those failures remain failures in the report; they
+are not silently skipped or treated as successful delivery. Use fresh test
+campaigns, retain evidence, and revoke temporary bot tokens after the run.
