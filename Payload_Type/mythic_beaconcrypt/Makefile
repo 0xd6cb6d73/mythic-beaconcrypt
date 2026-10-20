@@ -15,12 +15,13 @@ test-integration: native
 test-poseidon: native
 	./scripts/test-poseidon.sh
 
+# Serialize package fixtures sharing Mythic's auto-deleting test exchange.
 test-transport: native
 	@if [ -z "$$BEACONCRYPT_AMQP_TEST_URL" ]; then \
 		printf '%s\n' 'Set BEACONCRYPT_AMQP_TEST_URL to an isolated RabbitMQ broker; transport tests must not be skipped.' >&2; \
 		exit 1; \
 	fi
-	./scripts/go.sh test -race -count=1 -run '^(TestRunLifecycleOverAMQP|TestConcurrentRPCOverAMQP)$$' ./internal/service ./internal/transport
+	./scripts/go.sh test -p 1 -race -count=1 -run '^(TestRunLifecycleOverAMQP|TestConcurrentRPCOverAMQP)$$' ./internal/service ./internal/transport
 
 vet: native
 	./scripts/go.sh vet ./...
